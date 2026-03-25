@@ -48,7 +48,9 @@ else:
     _PH = "?"
 
 def init_db():
-    with _conn() as c:
+    conn = _conn()
+    c = conn.cursor() if _USA_SUPABASE else conn
+    try:
         c.execute("""
         CREATE TABLE IF NOT EXISTS pacientes (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -128,7 +130,16 @@ def init_db():
         try:
             c.execute("ALTER TABLE pacientes ADD COLUMN consentimiento INTEGER DEFAULT 0")
         except: pass
-        c.commit()
+        if _USA_SUPABASE:
+            conn.commit()
+            c.close()
+            conn.close()
+        else:
+            c.commit()
+    except Exception as e:
+        if _USA_SUPABASE:
+            conn.rollback()
+        raise e
 
 init_db()
 
