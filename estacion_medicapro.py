@@ -47,99 +47,86 @@ else:
         return sqlite3.connect(DB_PATH, check_same_thread=False)
     _PH = "?"
 
-def init_db():
+def _ejecutar_sql(sql: str, params=None):
+    """Ejecuta SQL compatible con SQLite y PostgreSQL."""
     conn = _conn()
-    c = conn.cursor() if _USA_SUPABASE else conn
-    try:
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS pacientes (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            fecha       TEXT,
-            hora        TEXT,
-            nombres     TEXT,
-            dni         TEXT,
-            edad        INTEGER,
-            sexo        TEXT,
-            ocupacion   TEXT,
-            ciudad      TEXT,
-            altitud     INTEGER,
-            motivo      TEXT,
-            cie10       TEXT,
-            cie11       TEXT,
-            dx_nombre   TEXT,
-            gad7        INTEGER,
-            phq9        INTEGER,
-            mejoria     INTEGER,
-            cbd_mg_ml   REAL,
-            volumen_ml  REAL,
-            gotas_dia   INTEGER,
-            ratio       TEXT,
-            notas       TEXT,
-            creado_en   TEXT DEFAULT (datetime('now','localtime'))
-        )""")
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS citas (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            paciente    TEXT,
-            fecha       TEXT,
-            hora        TEXT,
-            especialidad TEXT,
-            estado      TEXT DEFAULT 'Pendiente',
-            notas       TEXT,
-            creado_en   TEXT DEFAULT (datetime('now','localtime'))
-        )""")
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS farmacos (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            paciente_id INTEGER,
-            medicamento TEXT,
-            dosis       TEXT,
-            frecuencia  TEXT,
-            tiempo_uso  TEXT,
-            FOREIGN KEY(paciente_id) REFERENCES pacientes(id)
-        )""")
-        # ── Tabla auditoría de acciones ──
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS auditoria (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            fecha       TEXT DEFAULT (datetime('now','localtime')),
-            usuario     TEXT,
-            rol         TEXT,
-            accion      TEXT,
-            detalle     TEXT,
-            ip_hash     TEXT
-        )""")
-        # ── Tabla consentimientos informados ──
-        c.execute("""
-        CREATE TABLE IF NOT EXISTS consentimientos (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            paciente_id INTEGER,
-            nombres     TEXT,
-            dni         TEXT,
-            fecha       TEXT DEFAULT (datetime('now','localtime')),
-            medico      TEXT,
-            ley_29733   INTEGER DEFAULT 1,
-            ley_30681   INTEGER DEFAULT 1,
-            ip_hash     TEXT,
-            FOREIGN KEY(paciente_id) REFERENCES pacientes(id)
-        )""")
-        # ── Columnas extra en pacientes si no existen ──
+    if _USA_SUPABASE:
+        cur = conn.cursor()
+        cur.execute(sql, params) if params else cur.execute(sql)
+        conn.commit()
+        cur.close()
+        conn.close()
+    else:
+        with conn:
+            if params:
+                conn.execute(sql, params)
+            else:
+                conn.execute(sql)
+
+def _pk():
+    """Primary key compatible: SERIAL para PostgreSQL, AUTOINCREMENT para SQLite."""
+    return "SERIAL PRIMARY KEY" if _USA_SUPABASE else "INTEGER PRIMARY KEY AUTOINCREMENT"
+
+def _now():
+    """Timestamp default compatible."""
+    return "NOW()" if _USA_SUPABASE else "(datetime('now','localtime'))"
+
+def init_db():
+    pk   = _pk()
+    now  = _now()
+    sqls = [
+        f"""CREATE TABLE IF NOT EXISTS pacientes (
+            id          {pk},
+            fecha       TEXT, hora TEXT, nombres TEXT, dni TEXT,
+            edad        INTEGER, sexo TEXT, ocupacion TEXT,
+            ciudad      TEXT, altitud INTEGER, motivo TEXT,
+            cie10       TEXT, cie11 TEXT, dx_nombre TEXT,
+            gad7        INTEGER DEFAULT 0, phq9 INTEGER DEFAULT 0,
+            mejoria     INTEGER DEFAULT 0, cbd_mg_ml REAL DEFAULT 0,
+            volumen_ml  REAL DEFAULT 0, gotas_dia INTEGER DEFAULT 0,
+            ratio       TEXT, notas TEXT,
+            creado_en   TEXT DEFAULT {now},
+            creado_por  TEXT, consentimiento INTEGER DEFAULT 0
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS citas (
+            id          {pk},
+            paciente    TEXT, fecha TEXT, hora TEXT,
+            especialidad TEXT, estado TEXT DEFAULT 'Pendiente',
+            notas       TEXT, creado_en TEXT DEFAULT {now}
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS farmacos (
+            id          {pk},
+            paciente_id INTEGER, medicamento TEXT,
+            dosis       TEXT, frecuencia TEXT, tiempo_uso TEXT
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS auditoria (
+            id          {pk},
+            fecha       TEXT DEFAULT {now},
+            usuario     TEXT, rol TEXT, accion TEXT,
+            detalle     TEXT, ip_hash TEXT
+        )""",
+        f"""CREATE TABLE IF NOT EXISTS consentimientos (
+            id          {pk},
+            paciente_id INTEGER, nombres TEXT, dni TEXT,
+            fecha       TEXT DEFAULT {now},
+            medico      TEXT, ley_29733 INTEGER DEFAULT 1,
+            ley_30681   INTEGER DEFAULT 1, ip_hash TEXT
+        )""",
+    ]
+    for sql in sqls:
         try:
-            c.execute("ALTER TABLE pacientes ADD COLUMN creado_por TEXT")
-        except: pass
+            _ejecutar_sql(sql)
+        except Exception as e:
+            pass
+    # Columnas extra opcionales
+    for col_sql in [
+        "ALTER TABLE pacientes ADD COLUMN creado_por TEXT",
+        "ALTER TABLE pacientes ADD COLUMN consentimiento INTEGER DEFAULT 0",
+    ]:
         try:
-            c.execute("ALTER TABLE pacientes ADD COLUMN consentimiento INTEGER DEFAULT 0")
-        except: pass
-        if _USA_SUPABASE:
-            conn.commit()
-            c.close()
-            conn.close()
-        else:
-            c.commit()
-    except Exception as e:
-        if _USA_SUPABASE:
-            conn.rollback()
-        raise e
+            _ejecutar_sql(col_sql)
+        except:
+            pass
 
 init_db()
 
@@ -148,12 +135,11 @@ def registrar_auditoria(accion: str, detalle: str = ""):
     try:
         usuario = st.session_state.get("usuario", "sistema")
         rol     = st.session_state.get("rol", "—")
-        with _conn() as conn:
-            conn.execute(
-                "INSERT INTO auditoria (usuario,rol,accion,detalle) VALUES (?,?,?,?)",
-                (usuario, rol, accion, detalle[:500])
-            )
-            conn.commit()
+        ph = _PH
+        _ejecutar_sql(
+            f"INSERT INTO auditoria (usuario,rol,accion,detalle) VALUES ({ph},{ph},{ph},{ph})",
+            (usuario, rol, accion, detalle[:500])
+        )
     except: pass
 
 def guardar_paciente(d: dict) -> int:
@@ -180,69 +166,95 @@ def guardar_paciente(d: dict) -> int:
     return pid
 
 def guardar_farmacos(paciente_id: int, farmacos: list):
-    with _conn() as c:
-        for f in farmacos:
-            c.execute("""
-            INSERT INTO farmacos (paciente_id,medicamento,dosis,frecuencia,tiempo_uso)
-            VALUES (?,?,?,?,?)
-            """, (paciente_id, f.get("Medicamento",""), f.get("Dosis",""),
-                  f.get("Frecuencia",""), f.get("Tiempo","")))
-        c.commit()
+    ph = _PH
+    for f in farmacos:
+        _ejecutar_sql(
+            f"INSERT INTO farmacos (paciente_id,medicamento,dosis,frecuencia,tiempo_uso) VALUES ({ph},{ph},{ph},{ph},{ph})",
+            (paciente_id, f.get("Medicamento",""), f.get("Dosis",""),
+             f.get("Frecuencia",""), f.get("Tiempo",""))
+        )
 
 def guardar_cita(d: dict):
-    with _conn() as c:
-        c.execute("""
-        INSERT INTO citas (paciente,fecha,hora,especialidad,notas)
-        VALUES (?,?,?,?,?)
-        """, (d.get("paciente",""), d.get("fecha",""), d.get("hora",""),
-              d.get("especialidad",""), d.get("notas","")))
-        c.commit()
+    ph = _PH
+    _ejecutar_sql(
+        f"INSERT INTO citas (paciente,fecha,hora,especialidad,notas) VALUES ({ph},{ph},{ph},{ph},{ph})",
+        (d.get("paciente",""), d.get("fecha",""), d.get("hora",""),
+         d.get("especialidad",""), d.get("notas",""))
+    )
 
 def actualizar_estado_cita(cita_id: int, estado: str):
-    with _conn() as c:
-        c.execute("UPDATE citas SET estado=? WHERE id=?", (estado, cita_id))
-        c.commit()
+    ph = _PH
+    _ejecutar_sql(f"UPDATE citas SET estado={ph} WHERE id={ph}", (estado, cita_id))
 
 def eliminar_cita(cita_id: int):
-    with _conn() as c:
-        c.execute("DELETE FROM citas WHERE id=?", (cita_id,))
-        c.commit()
+    ph = _PH
+    _ejecutar_sql(f"DELETE FROM citas WHERE id={ph}", (cita_id,))
 
 def leer_pacientes(busqueda: str = "") -> pd.DataFrame:
     q = f"%{busqueda}%" if busqueda else "%"
-    with _conn() as c:
-        df = pd.read_sql_query("""
-        SELECT id, fecha, nombres, dni, edad, sexo, ciudad, motivo,
-               cie10, cie11, dx_nombre, gad7, phq9, cbd_mg_ml, volumen_ml,
-               gotas_dia, ratio, mejoria, creado_en
-        FROM pacientes
-        WHERE nombres LIKE ? OR dni LIKE ? OR cie10 LIKE ? OR motivo LIKE ?
-        ORDER BY id DESC
-        """, c, params=(q, q, q, q))
+    ph = _PH
+    sql = (f"SELECT id, fecha, nombres, dni, edad, sexo, ciudad, motivo, "
+           f"cie10, cie11, dx_nombre, gad7, phq9, cbd_mg_ml, volumen_ml, "
+           f"gotas_dia, ratio, mejoria, creado_en FROM pacientes "
+           f"WHERE nombres LIKE {ph} OR dni LIKE {ph} OR cie10 LIKE {ph} OR motivo LIKE {ph} "
+           f"ORDER BY id DESC")
+    conn = _conn()
+    try:
+        df = pd.read_sql_query(sql, conn, params=(q, q, q, q))
+    finally:
+        if _USA_SUPABASE: conn.close()
     return df
 
 def leer_paciente_id(pid: int) -> dict:
-    with _conn() as c:
-        row = c.execute("SELECT * FROM pacientes WHERE id=?", (pid,)).fetchone()
-        cols = [d[0] for d in c.execute("SELECT * FROM pacientes WHERE id=?", (pid,)).description] if row else []
-    return dict(zip(cols, row)) if row else {}
+    ph = _PH
+    conn = _conn()
+    try:
+        if _USA_SUPABASE:
+            cur = conn.cursor()
+            cur.execute(f"SELECT * FROM pacientes WHERE id={ph}", (pid,))
+            row = cur.fetchone()
+            cols = [desc[0] for desc in cur.description] if row else []
+            cur.close()
+            return dict(zip(cols, row)) if row else {}
+        else:
+            row = conn.execute(f"SELECT * FROM pacientes WHERE id={ph}", (pid,)).fetchone()
+            cols = [d[0] for d in conn.execute(f"SELECT * FROM pacientes WHERE id={ph}", (pid,)).description] if row else []
+            return dict(zip(cols, row)) if row else {}
+    finally:
+        if _USA_SUPABASE: conn.close()
 
 def leer_citas(solo_pendientes: bool = False) -> pd.DataFrame:
-    with _conn() as c:
-        filtro = "WHERE estado='Pendiente'" if solo_pendientes else ""
-        df = pd.read_sql_query(
-            f"SELECT * FROM citas {filtro} ORDER BY fecha, hora", c)
+    filtro = "WHERE estado='Pendiente'" if solo_pendientes else ""
+    conn = _conn()
+    try:
+        df = pd.read_sql_query(f"SELECT * FROM citas {filtro} ORDER BY fecha, hora", conn)
+    finally:
+        if _USA_SUPABASE: conn.close()
     return df
 
 def stats_db() -> dict:
-    with _conn() as c:
-        total   = c.execute("SELECT COUNT(*) FROM pacientes").fetchone()[0]
-        hoy     = c.execute("SELECT COUNT(*) FROM pacientes WHERE fecha=?",
-                            (datetime.now().strftime("%d/%m/%Y"),)).fetchone()[0]
-        gad_avg = c.execute("SELECT AVG(gad7) FROM pacientes").fetchone()[0] or 0
-        phq_avg = c.execute("SELECT AVG(phq9) FROM pacientes").fetchone()[0] or 0
-        ultima  = c.execute("SELECT fecha,nombres FROM pacientes ORDER BY id DESC LIMIT 1").fetchone()
-        citas_p = c.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'").fetchone()[0]
+    conn = _conn()
+    try:
+        if _USA_SUPABASE:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM pacientes"); total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM pacientes WHERE fecha=%s",
+                        (datetime.now().strftime("%d/%m/%Y"),)); hoy = cur.fetchone()[0]
+            cur.execute("SELECT AVG(gad7) FROM pacientes"); gad_avg = cur.fetchone()[0] or 0
+            cur.execute("SELECT AVG(phq9) FROM pacientes"); phq_avg = cur.fetchone()[0] or 0
+            cur.execute("SELECT fecha,nombres FROM pacientes ORDER BY id DESC LIMIT 1"); ultima = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'"); citas_p = cur.fetchone()[0]
+            cur.close()
+        else:
+            total   = conn.execute("SELECT COUNT(*) FROM pacientes").fetchone()[0]
+            hoy     = conn.execute("SELECT COUNT(*) FROM pacientes WHERE fecha=?",
+                                (datetime.now().strftime("%d/%m/%Y"),)).fetchone()[0]
+            gad_avg = conn.execute("SELECT AVG(gad7) FROM pacientes").fetchone()[0] or 0
+            phq_avg = conn.execute("SELECT AVG(phq9) FROM pacientes").fetchone()[0] or 0
+            ultima  = conn.execute("SELECT fecha,nombres FROM pacientes ORDER BY id DESC LIMIT 1").fetchone()
+            citas_p = conn.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'").fetchone()[0]
+    finally:
+        if _USA_SUPABASE: conn.close()
     return {"total":total,"hoy":hoy,"gad_avg":gad_avg,"phq_avg":phq_avg,
             "ultima":ultima,"citas_p":citas_p}
 
