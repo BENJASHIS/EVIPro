@@ -10,19 +10,34 @@ from diagnosticos_db import buscar_diagnostico, formato_opcion, DIAGNOSTICOS
 #  Producción (Streamlit Cloud): Supabase (PostgreSQL)
 # ══════════════════════════════════════════════════════════════
 try:
-    _SUPABASE_URL = st.secrets.get("SUPABASE_DB_URL", "")
+    _SUPABASE_HOST = st.secrets.get("SUPABASE_HOST", "")
+    _SUPABASE_PWD  = st.secrets.get("SUPABASE_PWD", "")
+    _SUPABASE_USER = st.secrets.get("SUPABASE_USER", "postgres")
+    _SUPABASE_DB   = st.secrets.get("SUPABASE_DB", "postgres")
+    _SUPABASE_PORT = int(st.secrets.get("SUPABASE_PORT", "5432"))
 except:
-    _SUPABASE_URL = ""
+    _SUPABASE_HOST = ""
+    _SUPABASE_PWD  = ""
+    _SUPABASE_USER = "postgres"
+    _SUPABASE_DB   = "postgres"
+    _SUPABASE_PORT = 5432
 
-_USA_SUPABASE = bool(_SUPABASE_URL)
+_USA_SUPABASE = bool(_SUPABASE_HOST and _SUPABASE_PWD)
 
 if _USA_SUPABASE:
     try:
         import psycopg2
-        from psycopg2.extras import RealDictCursor
         def _conn():
-            return psycopg2.connect(_SUPABASE_URL, connect_timeout=10)
-        _PH = "%s"   # placeholder PostgreSQL
+            return psycopg2.connect(
+                host=_SUPABASE_HOST,
+                port=_SUPABASE_PORT,
+                user=_SUPABASE_USER,
+                password=_SUPABASE_PWD,
+                dbname=_SUPABASE_DB,
+                connect_timeout=10,
+                sslmode="require"
+            )
+        _PH = "%s"
     except ImportError:
         st.error("❌ Agregar psycopg2-binary a requirements.txt")
         st.stop()
@@ -30,7 +45,7 @@ else:
     DB_PATH = "evipro.db"
     def _conn():
         return sqlite3.connect(DB_PATH, check_same_thread=False)
-    _PH = "?"        # placeholder SQLite
+    _PH = "?"
 
 def init_db():
     with _conn() as c:
