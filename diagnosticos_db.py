@@ -337,6 +337,92 @@ DIAGNOSTICOS = [
     {"cie10":"Z87","cie11":"QC82","nombre":"Historia personal de otras enfermedades y afecciones","cap":"Z · Factores salud","tags":["antecedentes personales","historia médica personal","antecedente patológico"]},
     {"cie10":"Z87.891","cie11":"QC45","nombre":"Uso a largo plazo de cannabinoides medicinales","cap":"Z · Factores salud","tags":["cannabis medicinal","CBD terapéutico","cannabinoide medicinal","THC medicinal","receta cannabis","tratamiento cannabis"]},
     {"cie10":"Z96","cie11":"QC4Y","nombre":"Presencia de implantes y prótesis funcionales","cap":"Z · Factores salud","tags":["prótesis","implante","marcapasos","válvula cardiaca","implante coclear","stent"]},
+
+    # ── HÍGADO / METABOLISMO ──
+    {"cie10":"K76.0","cie11":"DB94.0","nombre":"Síndrome de Gilbert (hiperbilirrubinemia benigna)","cap":"K · Digestivo","tags":["gilbert","síndrome de gilbert","hiperbilirrubinemia","bilirrubina elevada","ictericia benigna","UGT1A1","ictericia gilbert","gilbert hiperbilirrubinemia"]},
+    {"cie10":"K76.1","cie11":"DB94","nombre":"Hígado graso no alcohólico (NASH/NAFLD)","cap":"K · Digestivo","tags":["hígado graso","nafld","nash","esteatosis hepática","esteatohepatitis","hígado graso no alcohólico"]},
+    {"cie10":"K74.6","cie11":"DB93.1","nombre":"Cirrosis hepática","cap":"K · Digestivo","tags":["cirrosis","cirrosis hepática","fibrosis hepática","insuficiencia hepática","hipertensión portal"]},
+    {"cie10":"K75.4","cie11":"DB95","nombre":"Hepatitis autoinmune","cap":"K · Digestivo","tags":["hepatitis autoinmune","hepatitis crónica activa","autoinmune hepático"]},
+    {"cie10":"K83.0","cie11":"DC11","nombre":"Colangitis esclerosante primaria","cap":"K · Digestivo","tags":["colangitis","CEP","colangitis esclerosante","colangitis biliar primaria"]},
+
+    # ── NEUROLÓGICO AMPLIADO ──
+    {"cie10":"G10","cie11":"8A01.10","nombre":"Enfermedad de Huntington","cap":"G · Nervioso","tags":["huntington","corea de huntington","enfermedad huntington","corea hereditaria"]},
+    {"cie10":"G12.2","cie11":"8B60","nombre":"Esclerosis Lateral Amiotrófica (ELA)","cap":"G · Nervioso","tags":["ELA","esclerosis lateral amiotrófica","Lou Gehrig","SLA","motoneurona","enfermedad motoneurona"]},
+    {"cie10":"G25.0","cie11":"8A04","nombre":"Temblor esencial","cap":"G · Nervioso","tags":["temblor esencial","temblor benigno","tremor","temblor familiar","temblor acción"]},
+    {"cie10":"G35","cie11":"8A40","nombre":"Esclerosis Múltiple","cap":"G · Nervioso","tags":["esclerosis múltiple","EM","SM","desmielinización","esclerosis placas","espasticidad EM"]},
+    {"cie10":"G50.0","cie11":"8B82.0","nombre":"Neuralgia del trigémino","cap":"G · Nervioso","tags":["neuralgia trigémino","dolor facial","tic douloureux","neuralgia facial","trigémino"]},
+    {"cie10":"G54","cie11":"8C10","nombre":"Radiculopatía / Ciática","cap":"G · Nervioso","tags":["radiculopatía","ciática","lumbociática","hernia disco","radiculalgia","sciatica","ciatalgia"]},
+    {"cie10":"G62","cie11":"8C20","nombre":"Polineuropatía periférica","cap":"G · Nervioso","tags":["polineuropatía","neuropatía periférica","polineuritis","neuropatía diabética","neuropatía periférica"]},
+    {"cie10":"G70","cie11":"8C60","nombre":"Miastenia gravis","cap":"G · Nervioso","tags":["miastenia gravis","miastenia","debilidad muscular autoinmune","anticuerpos receptor acetilcolina"]},
+    {"cie10":"G80","cie11":"8D20","nombre":"Parálisis cerebral","cap":"G · Nervioso","tags":["parálisis cerebral","PC","spasticidad","diplegia","hemiplegia cerebral","encefalopatía"]},
+    {"cie10":"G90","cie11":"8D80","nombre":"Disautonomía / Disfunción autonómica","cap":"G · Nervioso","tags":["disautonomía","disfunción autonómica","POTS","taquicardia ortostática","síncope vasovagal","POTS"]},
+    {"cie10":"G93.3","cie11":"8E49","nombre":"Síndrome de fatiga crónica (SFC/ME)","cap":"G · Nervioso","tags":["fatiga crónica","SFC","encefalomielitis miálgica","ME/CFS","fatiga post-COVID","síndrome fatiga crónica"]},
+
+    # ── DOLOR Y MUSCULOESQUELÉTICO AMPLIADO ──
+    {"cie10":"M06.9","cie11":"FA20","nombre":"Artritis reumatoide","cap":"M · Osteomuscular","tags":["artritis reumatoide","AR","poliartritis","artritis inflamatoria","reumatoide","factor reumatoide"]},
+    {"cie10":"M07","cie11":"FA30","nombre":"Artritis psoriásica","cap":"M · Osteomuscular","tags":["artritis psoriásica","psoriasis articular","artropatía psoriásica","SpA"]},
+    {"cie10":"M10","cie11":"FA92","nombre":"Gota / Artritis gotosa","cap":"M · Osteomuscular","tags":["gota","hiperuricemia","artritis gotosa","ácido úrico elevado","podagra","tofos","hiperuricemia"]},
+    {"cie10":"M16","cie11":"FA91.0","nombre":"Coxartrosis / Artrosis de cadera","cap":"M · Osteomuscular","tags":["coxartrosis","artrosis cadera","osteoartritis cadera","gonartrosis","desgaste cadera"]},
+    {"cie10":"M17","cie11":"FA91.1","nombre":"Gonartrosis / Artrosis de rodilla","cap":"M · Osteomuscular","tags":["gonartrosis","artrosis rodilla","osteoartritis rodilla","desgaste rodilla","condromalacia"]},
+    {"cie10":"M32","cie11":"FA22","nombre":"Lupus eritematoso sistémico (LES)","cap":"M · Osteomuscular","tags":["lupus","LES","lupus eritematoso","lupus sistémico","enfermedad autoinmune sistémica","LES"]},
+    {"cie10":"M45","cie11":"FA91.2","nombre":"Espondilitis anquilosante","cap":"M · Osteomuscular","tags":["espondilitis anquilosante","EA","espondiloartritis","sacroileítis","HLA-B27","rigidez columna","espondilitis"]},
+    {"cie10":"M51.1","cie11":"FA80","nombre":"Hernia discal lumbar","cap":"M · Osteomuscular","tags":["hernia discal","hernia disco lumbar","protrusión discal","hernia L4L5","hernia L5S1","prolapso disco"]},
+    {"cie10":"M65","cie11":"FB52","nombre":"Tendinitis / Tenosinovitis","cap":"M · Osteomuscular","tags":["tendinitis","tenosinovitis","inflamación tendón","tendinopatía","manguito rotador","tendón aquiles"]},
+    {"cie10":"M72.2","cie11":"FB52.1","nombre":"Fascitis plantar","cap":"M · Osteomuscular","tags":["fascitis plantar","talón","espolón calcáneo","dolor talón","plantar fasciitis","espolón"]},
+    {"cie10":"M81","cie11":"FB83","nombre":"Osteoporosis","cap":"M · Osteomuscular","tags":["osteoporosis","osteopenia","baja densidad ósea","dexa","menopausia ósea","fractura osteoporótica"]},
+
+    # ── ONCOLOGÍA ──
+    {"cie10":"C16","cie11":"2B72","nombre":"Cáncer gástrico","cap":"C · Oncología","tags":["cáncer gástrico","cáncer estómago","tumor gástrico","adenocarcinoma gástrico"]},
+    {"cie10":"C18","cie11":"2B90","nombre":"Cáncer colorrectal","cap":"C · Oncología","tags":["cáncer colon","cáncer recto","colorrectal","tumor colorrectal","CCR"]},
+    {"cie10":"C34","cie11":"2C25","nombre":"Cáncer de pulmón","cap":"C · Oncología","tags":["cáncer pulmón","tumor pulmón","carcinoma broncogénico","CPCP","CPCNP","adenocarcinoma pulmón"]},
+    {"cie10":"C50","cie11":"2C60","nombre":"Cáncer de mama","cap":"C · Oncología","tags":["cáncer mama","tumor mama","carcinoma mama","cáncer seno","neoplasia mama","mastectomía"]},
+    {"cie10":"C53","cie11":"2C77","nombre":"Cáncer de cuello uterino","cap":"C · Oncología","tags":["cáncer cérvix","cáncer cuello uterino","carcinoma cervical","HPV cáncer","cervicouterino"]},
+    {"cie10":"C61","cie11":"2C82","nombre":"Cáncer de próstata","cap":"C · Oncología","tags":["cáncer próstata","tumor próstata","carcinoma prostático","adenocarcinoma próstata","PSA elevado"]},
+    {"cie10":"C70","cie11":"2A00","nombre":"Tumor del sistema nervioso central","cap":"C · Oncología","tags":["tumor cerebral","glioblastoma","meningioma","astrocitoma","glioma","tumor SNC","neoplasia SNC"]},
+    {"cie10":"C81","cie11":"2A20","nombre":"Linfoma de Hodgkin","cap":"C · Oncología","tags":["linfoma hodgkin","linfoma","enfermedad Hodgkin"]},
+    {"cie10":"C82","cie11":"2A60","nombre":"Linfoma no Hodgkin","cap":"C · Oncología","tags":["linfoma no hodgkin","LNH","linfoma difuso","linfoma folicular","linfoma células B"]},
+    {"cie10":"C90","cie11":"2A83","nombre":"Mieloma múltiple","cap":"C · Oncología","tags":["mieloma múltiple","mieloma","plasmocitoma","gammpatía monoclonal"]},
+    {"cie10":"C91","cie11":"2B30","nombre":"Leucemia linfocítica","cap":"C · Oncología","tags":["leucemia linfocítica","LLC","LLA","leucemia linfoblástica","leucemia crónica"]},
+    {"cie10":"Z51.0","cie11":"QC80","nombre":"En tratamiento quimioterapia / cuidados paliativos","cap":"Z · Factores salud","tags":["quimioterapia","quimio","tratamiento oncológico","náuseas quimio","cuidados paliativos","paliativo","dolor oncológico"]},
+
+    # ── PSIQUIATRÍA AMPLIADO ──
+    {"cie10":"F20","cie11":"6A20","nombre":"Esquizofrenia","cap":"F · Mental","tags":["esquizofrenia","psicosis crónica","alucinaciones","delirios","síntomas positivos negativos"]},
+    {"cie10":"F25","cie11":"6A24","nombre":"Trastorno esquizoafectivo","cap":"F · Mental","tags":["esquizoafectivo","psicosis afectiva","trastorno esquizoafectivo"]},
+    {"cie10":"F31","cie11":"6A60","nombre":"Trastorno bipolar","cap":"F · Mental","tags":["bipolar","trastorno bipolar","manía","hipomanía","ciclos maníaco-depresivos","TAB","bipolaridad"]},
+    {"cie10":"F60.3","cie11":"6D11","nombre":"Trastorno límite de la personalidad (TLP)","cap":"F · Mental","tags":["TLP","borderline","límite personalidad","trastorno límite","impulsividad","inestabilidad emocional"]},
+    {"cie10":"F84.0","cie11":"6A02","nombre":"Trastorno del espectro autista (TEA)","cap":"F · Mental","tags":["autismo","TEA","trastorno espectro autista","asperger","ASD","autismo infantil"]},
+    {"cie10":"F90","cie11":"6A05","nombre":"TDAH / Trastorno por déficit de atención e hiperactividad","cap":"F · Mental","tags":["tdah","TDAH","ADD","déficit atención","hiperactividad","trastorno atención","ADHD"]},
+    {"cie10":"F95","cie11":"8A05","nombre":"Síndrome de Tourette / Tics","cap":"F · Mental","tags":["tourette","tics","síndrome tourette","tics motores","coprolalia","tics vocales"]},
+    {"cie10":"F50","cie11":"6B80","nombre":"Anorexia nerviosa","cap":"F · Mental","tags":["anorexia","anorexia nerviosa","trastorno alimentario","TCA","restricción alimentaria"]},
+    {"cie10":"F50.2","cie11":"6B81","nombre":"Bulimia nerviosa","cap":"F · Mental","tags":["bulimia","bulimia nerviosa","TCA","atracones","purgas","trastorno alimentario"]},
+
+    # ── ENDOCRINO AMPLIADO ──
+    {"cie10":"E28.2","cie11":"5A90","nombre":"Síndrome de ovario poliquístico (SOP)","cap":"E · Endócrino","tags":["SOP","ovario poliquístico","PCOS","hiperandrogenismo","anovulación","resistencia insulina SOP","SOP infertilidad"]},
+    {"cie10":"E66","cie11":"5B81","nombre":"Obesidad","cap":"E · Endócrino","tags":["obesidad","sobrepeso","IMC elevado","adiposidad","obesidad mórbida","obesidad grado 3"]},
+    {"cie10":"E78","cie11":"5C80","nombre":"Dislipidemia / Hipercolesterolemia","cap":"E · Endócrino","tags":["dislipidemia","colesterol alto","hipercolesterolemia","hipertrigliceridemia","LDL alto","lípidos alterados"]},
+    {"cie10":"E83.1","cie11":"5C65","nombre":"Hemocromatosis","cap":"E · Endócrino","tags":["hemocromatosis","hierro elevado","ferritina alta","sobrecarga hierro","hemocromatosis hereditaria"]},
+    {"cie10":"E24","cie11":"5A61","nombre":"Síndrome de Cushing","cap":"E · Endócrino","tags":["cushing","síndrome cushing","hipercortisolismo","cortisol elevado","cara luna"]},
+    {"cie10":"E27.1","cie11":"5A70","nombre":"Insuficiencia suprarrenal / Addison","cap":"E · Endócrino","tags":["addison","insuficiencia suprarrenal","cortisol bajo","hiperpigmentación addison"]},
+
+    # ── CARDIOVASCULAR AMPLIADO ──
+    {"cie10":"I48","cie11":"BC81","nombre":"Fibrilación auricular","cap":"I · Cardiovascular","tags":["fibrilación auricular","FA","arritmia","flutter auricular","anticoagulación FA"]},
+    {"cie10":"I50","cie11":"BD10","nombre":"Insuficiencia cardíaca congestiva","cap":"I · Cardiovascular","tags":["insuficiencia cardíaca","ICC","falla cardíaca","cardiopatía descompensada","IC sistólica","IC diastólica"]},
+    {"cie10":"I63","cie11":"8B11","nombre":"Accidente cerebrovascular isquémico (ACV)","cap":"I · Cardiovascular","tags":["ACV","stroke","accidente cerebrovascular","ictus","infarto cerebral","trombosis cerebral","hemiplegia ACV"]},
+    {"cie10":"I87","cie11":"BD54","nombre":"Trombosis venosa profunda (TVP)","cap":"I · Cardiovascular","tags":["TVP","trombosis venosa profunda","trombo","tromboflebitis","TEP","embolia pulmonar"]},
+
+    # ── RESPIRATORIO AMPLIADO ──
+    {"cie10":"J44","cie11":"CA22","nombre":"EPOC / Enfermedad pulmonar obstructiva crónica","cap":"J · Respiratorio","tags":["EPOC","enfermedad pulmonar obstructiva","bronquitis crónica","enfisema","disnea EPOC"]},
+    {"cie10":"J84","cie11":"CB03","nombre":"Fibrosis pulmonar / Enfermedad pulmonar intersticial","cap":"J · Respiratorio","tags":["fibrosis pulmonar","EPI","intersticial","FPI","fibrosis pulmonar idiopática"]},
+
+    # ── RENAL / UROLÓGICO ──
+    {"cie10":"N18","cie11":"GB61","nombre":"Enfermedad renal crónica (ERC)","cap":"N · Genitourinario","tags":["ERC","insuficiencia renal crónica","creatinina elevada","filtrado glomerular bajo","IRC","renal crónico"]},
+    {"cie10":"N80","cie11":"GA10","nombre":"Endometriosis","cap":"N · Genitourinario","tags":["endometriosis","dolor pélvico","dismenorrea","infertilidad endometriosis","adenomiosis","endometriosis"]},
+    {"cie10":"N95","cie11":"GA30","nombre":"Menopausia / Síntomas climatéricos","cap":"N · Genitourinario","tags":["menopausia","climaterio","sofocos","bochornos","síntomas climatéricos","climaterio"]},
+
+    # ── DERMATOLOGÍA ──
+    {"cie10":"L20","cie11":"EA80","nombre":"Dermatitis atópica / Eccema","cap":"L · Piel","tags":["dermatitis atópica","eccema","atopia","piel seca","eczema","dermatitis infantil"]},
+    {"cie10":"L40","cie11":"EA90","nombre":"Psoriasis","cap":"L · Piel","tags":["psoriasis","placas psoriásicas","psoriasis vulgar","psoriasis en placas"]},
+    {"cie10":"L90","cie11":"EF20","nombre":"Esclerodermia / Esclerosis sistémica","cap":"L · Piel","tags":["esclerodermia","esclerosis sistémica","morfea","piel endurecida","fibrosis dérmica"]},
 ]
 
 

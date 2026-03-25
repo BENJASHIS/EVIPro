@@ -1,16 +1,36 @@
 import streamlit as st
 import pandas as pd
-import sqlite3, os, urllib.parse, hashlib
+import sqlite3, os, urllib.parse, hashlib, csv
 from datetime import date, datetime, timedelta
 from diagnosticos_db import buscar_diagnostico, formato_opcion, DIAGNOSTICOS
 
 # ══════════════════════════════════════════════════════════════
-#  BASE DE DATOS SQLite
+#  CONEXIÓN A BASE DE DATOS
+#  Local (Codespaces): SQLite — evipro.db
+#  Producción (Streamlit Cloud): Supabase (PostgreSQL)
 # ══════════════════════════════════════════════════════════════
-DB_PATH = "evipro.db"
+try:
+    _SUPABASE_URL = st.secrets.get("SUPABASE_DB_URL", "")
+except:
+    _SUPABASE_URL = ""
 
-def _conn():
-    return sqlite3.connect(DB_PATH, check_same_thread=False)
+_USA_SUPABASE = bool(_SUPABASE_URL)
+
+if _USA_SUPABASE:
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        def _conn():
+            return psycopg2.connect(_SUPABASE_URL, connect_timeout=10)
+        _PH = "%s"   # placeholder PostgreSQL
+    except ImportError:
+        st.error("❌ Agregar psycopg2-binary a requirements.txt")
+        st.stop()
+else:
+    DB_PATH = "evipro.db"
+    def _conn():
+        return sqlite3.connect(DB_PATH, check_same_thread=False)
+    _PH = "?"        # placeholder SQLite
 
 def init_db():
     with _conn() as c:
@@ -61,9 +81,54 @@ def init_db():
             tiempo_uso  TEXT,
             FOREIGN KEY(paciente_id) REFERENCES pacientes(id)
         )""")
+        # ── Tabla auditoría de acciones ──
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS auditoria (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            fecha       TEXT DEFAULT (datetime('now','localtime')),
+            usuario     TEXT,
+            rol         TEXT,
+            accion      TEXT,
+            detalle     TEXT,
+            ip_hash     TEXT
+        )""")
+        # ── Tabla consentimientos informados ──
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS consentimientos (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            paciente_id INTEGER,
+            nombres     TEXT,
+            dni         TEXT,
+            fecha       TEXT DEFAULT (datetime('now','localtime')),
+            medico      TEXT,
+            ley_29733   INTEGER DEFAULT 1,
+            ley_30681   INTEGER DEFAULT 1,
+            ip_hash     TEXT,
+            FOREIGN KEY(paciente_id) REFERENCES pacientes(id)
+        )""")
+        # ── Columnas extra en pacientes si no existen ──
+        try:
+            c.execute("ALTER TABLE pacientes ADD COLUMN creado_por TEXT")
+        except: pass
+        try:
+            c.execute("ALTER TABLE pacientes ADD COLUMN consentimiento INTEGER DEFAULT 0")
+        except: pass
         c.commit()
 
 init_db()
+
+def registrar_auditoria(accion: str, detalle: str = ""):
+    """Guarda cada acción relevante en la tabla auditoria."""
+    try:
+        usuario = st.session_state.get("usuario", "sistema")
+        rol     = st.session_state.get("rol", "—")
+        with _conn() as conn:
+            conn.execute(
+                "INSERT INTO auditoria (usuario,rol,accion,detalle) VALUES (?,?,?,?)",
+                (usuario, rol, accion, detalle[:500])
+            )
+            conn.commit()
+    except: pass
 
 def guardar_paciente(d: dict) -> int:
     with _conn() as c:
@@ -83,7 +148,10 @@ def guardar_paciente(d: dict) -> int:
             d.get("ratio",""), d.get("notas","")
         ))
         c.commit()
-        return cur.lastrowid
+        pid = cur.lastrowid
+    registrar_auditoria("GUARDAR_PACIENTE",
+        f"ID:{pid} | DNI:{d.get('dni','—')} | Dx:{d.get('dx_nombre','—')}")
+    return pid
 
 def guardar_farmacos(paciente_id: int, farmacos: list):
     with _conn() as c:
@@ -191,6 +259,7 @@ ROL_LABELS = {"medico": ("⚕ Médico","#00FFCC"), "auditor": ("📋 Auditor","#
 for k,v in {"autenticado":False,"usuario":None,"rol":None,"intentos":0,"log":[]}.items():
     if k not in st.session_state: st.session_state[k] = v
 
+
 def login(u, p):
     if st.session_state.intentos >= 5:
         st.error("🔒 Demasiados intentos. Recarga la página."); return
@@ -201,12 +270,14 @@ def login(u, p):
         st.session_state.rol = usr["rol"]
         st.session_state.intentos = 0
         st.session_state.log.append({"u":u,"r":usr["rol"],"h":datetime.now().strftime("%d/%m %H:%M"),"a":"LOGIN"})
+        registrar_auditoria("LOGIN", f"Usuario: {u} | Rol: {usr['rol']}")
         st.rerun()
     else:
         st.session_state.intentos += 1
         st.error(f"❌ Incorrecto. Intentos restantes: {5 - st.session_state.intentos}")
 
 def logout():
+    registrar_auditoria("LOGOUT", f"Sesión cerrada")
     st.session_state.log.append({"u":st.session_state.usuario,"r":st.session_state.rol,"h":datetime.now().strftime("%d/%m %H:%M"),"a":"LOGOUT"})
     for k in ["autenticado","usuario","rol"]: st.session_state[k] = False if k=="autenticado" else None
     st.rerun()
@@ -308,23 +379,182 @@ except: MI_NUMERO = "51942185939"
 
 CIUDADES = {"Cusco, PE":3399,"Lima, PE":154,"Arequipa, PE":2335,"Bogotá, CO":2625,
             "CDMX, MX":2240,"La Paz, BO":3640,"Quito, EC":2850,"Madrid, ES":657,"Denver, US":1609}
-DB_FARMACOS = [
-    "Pregabalina","Gabapentina","Tramadol","Morfina","Oxicodona","Codeína","Fentanilo",
-    "Sertralina","Fluoxetina","Escitalopram","Paroxetina","Venlafaxina","Duloxetina",
-    "Amitriptilina","Nortriptilina","Mirtazapina","Clomipramina",
-    "Alprazolam","Clonazepam","Diazepam","Lorazepam","Midazolam","Bromazepam",
-    "Clobazam","Valproato","Carbamazepina","Lamotrigina","Fenitoína","Levetiracetam",
-    "Warfarina","Rivaroxabán","Apixabán","Clopidogrel","Aspirin",
-    "Haloperidol","Risperidona","Quetiapina","Olanzapina","Aripiprazol","Clozapina",
-    "Litio","Topiramato","Bupropión","Metilfenidato","Atomoxetina",
-    "Metformina","Insulina","Glibenclamida","Sitagliptina",
-    "Atorvastatina","Simvastatina","Losartán","Enalapril","Amlodipino","Propranolol",
-    "Omeprazol","Pantoprazol","Metoclopramida",
-    "Dexametasona","Prednisona","Metilprednisolona",
-    "Ciclosporina","Tacrolimus","Metotrexato",
-    "Rifampicina","Isoniacida","Ketoconazol","Fluconazol",
-    "Ibuprofeno","Naproxeno","Celecoxib","Diclofenaco",
-]
+# ── Mapa comercial → genérico (para búsqueda inteligente) ──
+COMERCIAL_A_GENERICO = {
+    # Antiepilépticos
+    "Keppra":"Levetiracetam","Vimpat":"Lacosamida","Trileptal":"Oxcarbazepina",
+    "Tegretol":"Carbamazepina","Lamictal":"Lamotrigina","Topamax":"Topiramato",
+    "Depakine":"Valproato","Depakote":"Valproato","Rivotril":"Clonazepam",
+    "Frisium":"Clobazam","Mysoline":"Primidona","Zonegran":"Zonisamida",
+    "Fycompa":"Perampanel","Briviact":"Brivaracetam","Epidiolex":"CBD farmacéutico",
+    "Sabril":"Vigabatrina","Gabitril":"Tiagabina","Inovelon":"Rufinamida",
+    # Antidepresivos
+    "Prozac":"Fluoxetina","Zoloft":"Sertralina","Lexapro":"Escitalopram",
+    "Paxil":"Paroxetina","Effexor":"Venlafaxina","Cymbalta":"Duloxetina",
+    "Tryptanol":"Amitriptilina","Remeron":"Mirtazapina","Wellbutrin":"Bupropión",
+    # Ansiolíticos/BZD
+    "Valium":"Diazepam","Xanax":"Alprazolam","Doricum":"Midazolam",
+    "Lexotán":"Bromazepam","Orfidal":"Lorazepam",
+    # Antipsicóticos
+    "Haldol":"Haloperidol","Risperdal":"Risperidona","Seroquel":"Quetiapina",
+    "Zyprexa":"Olanzapina","Abilify":"Aripiprazol","Clozaril":"Clozapina",
+    # Opioides
+    "Ultram":"Tramadol","Durogesic":"Fentanilo","OxyContin":"Oxicodona",
+    # Anticoagulantes
+    "Coumadin":"Warfarina","Xarelto":"Rivaroxabán","Eliquis":"Apixabán",
+    "Plavix":"Clopidogrel",
+    # Otros
+    "Neurontin":"Gabapentina","Lyrica":"Pregabalina","Ritalin":"Metilfenidato",
+    "Strattera":"Atomoxetina","Glucophage":"Metformina",
+    "Lipitor":"Atorvastatina","Zocor":"Simvastatina","Inderal":"Propranolol",
+    "Losec":"Omeprazol","Nexium":"Esomeprazol",
+    "Rifadin":"Rifampicina","Nizoral":"Ketoconazol","Diflucan":"Fluconazol",
+    "Voltaren":"Diclofenaco","Celebrex":"Celecoxib","Naprosyn":"Naproxeno",
+    "Sandimmun":"Ciclosporina","Prograf":"Tacrolimus",
+    "Medrol":"Metilprednisolona","Decadron":"Dexametasona",
+    # Herbales / nombres comunes
+    "Hypericum":"Hierba de San Juan (St. John Wort)",
+    "San Juan":"Hierba de San Juan (St. John Wort)",
+    "St John":"Hierba de San Juan (St. John Wort)",
+    "Pasiflora":"Pasiflora (Passiflora incarnata)",
+    "Passion flower":"Pasiflora (Passiflora incarnata)",
+    "Kava":"Kava Kava",
+    "Ashwagandha":"Ashwagandha (Withania)",
+    "Withania":"Ashwagandha (Withania)",
+    "Ginkgo":"Ginkgo biloba",
+    "Pomelo":"Toronja / Pomelo (jugo)",
+    "Grapefruit":"Toronja / Pomelo (jugo)",
+    "Toronja":"Toronja / Pomelo (jugo)",
+    "5HTP":"5-HTP (5-hidroxitriptófano)",
+    "BioPerine":"Piperina (pimienta negra, BioPerine)",
+    "MCT":"Aceite de coco / MCT",
+    "CoQ10":"Coenzima Q10 (CoQ10)",
+    "Melatonina":"Melatonina",
+    "Valeriana":"Valeriana",
+    "Matricaria":"Matricaria (Tanacetum parthenium)",
+    "Feverfew":"Matricaria (Tanacetum parthenium)",
+    "Dong Quai":"Dong Quai (Angelica sinensis)",
+    "Equinacea":"Equinácea (suplemento)",
+    "Echinacea":"Equinácea (suplemento)",
+}
+
+# ── DB de fármacos con categorías ──
+DB_FARMACOS_CATEGORIAS = {
+    "🧠 ANTIEPILÉPTICOS": [
+        "Levetiracetam","Clobazam","Valproato","Carbamazepina","Oxcarbazepina",
+        "Lamotrigina","Fenitoína","Topiramato","Zonisamida","Lacosamida",
+        "Perampanel","Brivaracetam","Vigabatrina","Tiagabina","Rufinamida",
+        "Primidona","Fenobarbital","Etosuximida","Clonazepam","Gabapentina",
+        "Pregabalina","Stiripentol","Cannabidiol farmacéutico (Epidiolex)",
+    ],
+    "😰 ANSIOLÍTICOS / BZD": [
+        "Alprazolam","Clonazepam","Diazepam","Lorazepam","Midazolam","Bromazepam",
+        "Clordiacepóxido","Oxazepam","Tetrazepam","Buspirona",
+    ],
+    "😔 ANTIDEPRESIVOS": [
+        "Sertralina","Fluoxetina","Escitalopram","Paroxetina","Venlafaxina",
+        "Duloxetina","Amitriptilina","Nortriptilina","Mirtazapina","Clomipramina",
+        "Imipramina","Bupropión","Trazodona","Agomelatina","Vortioxetina",
+        "Fluvoxamina","Desvenlafaxina","Levomilnacipran",
+    ],
+    "🧩 ANTIPSICÓTICOS": [
+        "Haloperidol","Risperidona","Quetiapina","Olanzapina","Aripiprazol",
+        "Clozapina","Ziprasidona","Paliperidona","Amisulprida","Lurasidona",
+        "Cariprazina","Brexpiprazol","Asenapina",
+    ],
+    "💊 OPIOIDES / ANALGÉSICOS": [
+        "Tramadol","Morfina","Oxicodona","Codeína","Fentanilo","Hidromorfona",
+        "Buprenorfina","Tapentadol","Metadona","Naloxona",
+        "Ibuprofeno","Naproxeno","Celecoxib","Diclofenaco","Ketorolaco",
+        "Paracetamol","Metamizol","Pregabalina","Gabapentina",
+    ],
+    "❤️ CARDIOVASCULAR / ANTICOAG.": [
+        "Warfarina","Rivaroxabán","Apixabán","Dabigatrán","Edoxabán",
+        "Clopidogrel","Aspirina","Ticagrelor","Heparina",
+        "Atorvastatina","Simvastatina","Rosuvastatina","Pitavastatina",
+        "Losartán","Enalapril","Captopril","Ramipril","Lisinopril",
+        "Amlodipino","Nifedipino","Verapamilo","Diltiazem",
+        "Propranolol","Atenolol","Metoprolol","Bisoprolol","Carvedilol",
+        "Digoxina","Amiodarona","Furosemida","Espironolactona",
+    ],
+    "🔬 INMUNOSUPRESORES": [
+        "Ciclosporina","Tacrolimus","Sirolimus","Micofenolato",
+        "Metotrexato","Azatioprina","Leflunomida","Hidroxicloroquina",
+    ],
+    "🦠 ANTIMICROBIANOS": [
+        "Rifampicina","Isoniacida","Ketoconazol","Fluconazol","Itraconazol",
+        "Voriconazol","Eritromicina","Claritromicina","Azitromicina",
+        "Ciprofloxacino","Metronidazol","Efavirenz","Ritonavir",
+    ],
+    "🍬 METABÓLICOS / ENDÓCRINOS": [
+        "Metformina","Insulina","Glibenclamida","Sitagliptina","Empagliflozina",
+        "Liraglutida","Levotiroxina","Metimazol","Hidrocortisona",
+        "Dexametasona","Prednisona","Metilprednisolona","Fludrocortisona",
+    ],
+    "🧪 NEUROLÓGICOS / OTROS": [
+        "Metilfenidato","Atomoxetina","Modafinilo","Lisdexanfetamina",
+        "Memantina","Donepezilo","Rivastigmina","Galantamina",
+        "Litio","Topiramato","Pramipexol","Levodopa","Entacapona",
+        "Sumatriptán","Ergotamina","Betahistina","Piracetam",
+        "Omeprazol","Pantoprazol","Esomeprazol","Metoclopramida",
+        "Sildenafil","Tadalafil","Colchicina","Tamoxifeno","Imatinib",
+        "Hormona anticonceptiva oral","Levotiroxina","Isotretinoína",
+        "Naloxona","Naltrexona","Buprenorfina","Tapentadol",
+    ],
+    "🍋 ALIMENTOS CON INTERACCIÓN": [
+        "Toronja / Pomelo (jugo)",
+        "Toronja / Pomelo (fruta)",
+        "Alcohol etílico",
+        "Café / Cafeína (exceso)",
+        "Tabaco (nicotina)",
+        "Leche entera / grasas",
+        "Aceite de coco / MCT",
+    ],
+    "🌿 HERBALES / PLANTAS MEDICINALES": [
+        "Hierba de San Juan (St. John Wort)",
+        "Pasiflora (Passiflora incarnata)",
+        "Valeriana",
+        "Kava Kava",
+        "Lúpulo (Humulus lupulus)",
+        "Escutelaria (Scutellaria)",
+        "Manzanilla (concentrada)",
+        "Lavanda (aceite esencial oral)",
+        "Raíz de regaliz (Glycyrrhiza)",
+        "Cúrcuma (Curcuma longa, alta dosis)",
+        "Jengibre (alta dosis terapéutica)",
+        "Piperina (pimienta negra, BioPerine)",
+        "Matricaria (Tanacetum parthenium)",
+        "Dong Quai (Angelica sinensis)",
+        "Ajo (suplemento alta dosis)",
+        "Equinácea (suplemento)",
+        "Ashwagandha (Withania)",
+        "Ginkgo biloba",
+        "Ginseng",
+        "Albahaca sagrada / Tulsi",
+        "Té de hipericum (St. John's Wort / Hierba de San Juan)",
+    ],
+    "💊 SUPLEMENTOS / VITAMINAS": [
+        "Melatonina",
+        "5-HTP (5-hidroxitriptófano)",
+        "Magnesio (gluconato/citrato)",
+        "Vitamina D3 (altas dosis)",
+        "Vitamina E (tocoferol)",
+        "Omega-3 (EPA/DHA altas dosis)",
+        "CBD aislado (otro producto)",
+        "Curcumina (alta dosis)",
+        "Resveratrol (suplemento)",
+        "Glutatión (IV o alta dosis)",
+        "DHEA (suplemento)",
+        "Coenzima Q10 (CoQ10)",
+        "Piperina (pimienta negra, BioPerine)",
+        "Melatonina + valeriana (combinados)",
+    ],
+}
+
+# Lista plana para búsqueda (genéricos)
+DB_FARMACOS = sorted(set(
+    f for cat in DB_FARMACOS_CATEGORIAS.values() for f in cat
+))
 
 # Base de interacciones cannabinoides — nivel, mecanismo, recomendación
 INTERACCIONES_CBD = {
@@ -363,6 +593,144 @@ INTERACCIONES_CBD = {
     "Prednisona":      ("MODERADA","Corticoide — CYP3A4. Similar a dexametasona","Monitorear eficacia CBD. Posible reducción durante tratamiento."),
     "Atorvastatina":   ("LEVE",   "Estatina — CYP3A4 compartido. Interacción leve","Sin ajuste necesario en dosis habituales de CBD."),
     "Bupropión":       ("MODERADA","Antidepresivo — inhibidor CYP2D6. THC puede reducir umbral convulsivo","Usar con precaución. Preferir CBD puro."),
+    # ── Antiepilépticos adicionales ──
+    "Oxcarbazepina":   ("ALTA",   "Inductor CYP3A4 moderado — puede reducir niveles CBD 20-30%. Metabolito MHD activo","Monitorear eficacia CBD. Posible ajuste de dosis."),
+    "Topiramato":      ("MODERADA","CYP3A4 — interacción bidireccional leve. Ambos tienen efecto neuroprotector","Potencial sinergismo en migraña y epilepsia. Monitorear sedación."),
+    "Zonisamida":      ("MODERADA","CYP3A4 — metabolismo compartido. Ambos inhiben canales Na+","Vigilar toxicidad aditiva. Monitorear función renal."),
+    "Lacosamida":      ("LEVE",   "Sin interacción CYP significativa. Mecanismo diferente (inactivación lenta Na+)","Combinación generalmente segura. Evidencia limitada."),
+    "Perampanel":      ("MODERADA","CYP3A4 — CBD puede aumentar niveles perampanel. Antagonista AMPA","Monitorear niveles. Riesgo de agresividad y mareos aditivos."),
+    "Brivaracetam":    ("LEVE",   "SV2A — sin interacción CYP relevante. Similar a levetiracetam","Combinación segura. Evidencia emergente en epilepsia refractaria."),
+    "Vigabatrina":     ("LEVE",   "GABA-T — sin interacción CYP conocida","Vigilar campo visual. Combinación poco estudiada."),
+    "Fenobarbital":    ("ALTA",   "Potente inductor CYP3A4/CYP2C9 — reduce niveles CBD significativamente","Aumentar dosis CBD. Monitorear sedación aditiva."),
+    "Primidona":       ("ALTA",   "Se metaboliza a fenobarbital — mismo perfil inductor CYP","Ver fenobarbital. Monitorear niveles y sedación."),
+    "Etosuximida":     ("LEVE",   "CYP3A4 — interacción leve. Uso específico en ausencias","Combinación generalmente segura. Monitorear náuseas."),
+    "Stiripentol":     ("ALTA",   "Inhibidor CYP3A4/CYP1A2/CYP2C19 — puede elevar niveles CBD significativamente. Usado en Dravet","Reducir dosis CBD. Monitorear estrecho — combinación común en Dravet."),
+    "Cannabidiol farmacéutico (Epidiolex)": ("CRITICA","Mismo principio activo — riesgo sobredosis acumulada. Interacción directa con clobazam/valproato","No combinar con CBD magistral sin ajuste y supervisión especializada."),
+    "Rufinamida":      ("MODERADA","CYP — interacción bidireccional. Uso en síndrome Lennox-Gastaut","Monitorear niveles. Combinación con evidencia limitada."),
+    "Tiagabina":       ("LEVE",   "CYP3A4 — interacción leve. Inhibidor recaptación GABA","Vigilar sedación. Poca evidencia disponible."),
+    "Gabapentina":     ("MODERADA","Canales Ca2+ α2δ — sinergismo sedante y analgésico con CBD","Puede permitir reducción de gabapentina. Monitorear sedación."),
+    "Pregabalina":     ("MODERADA","Canales Ca2+ α2δ — sinergismo sedante. Similar a gabapentina","Opioid/cannabinoid-sparing potencial. Vigilar somnolencia."),
+    # ── Otros relevantes ──
+    "Amiodarona":      ("ALTA",   "Inhibidor CYP2C9/CYP3A4 — puede elevar niveles CBD. Vida media muy larga","Monitoreo estricto. Riesgo arritmias. Interacción prolongada."),
+    "Efavirenz":       ("ALTA",   "Inductor/inhibidor CYP3A4 — interacción compleja en VIH","Monitorear eficacia antiretroviral y niveles CBD."),
+    "Ritonavir":       ("ALTA",   "Potente inhibidor CYP3A4 — puede multiplicar niveles CBD","Reducir dosis CBD significativamente. Monitoreo estrecho."),
+    "Claritromicina":  ("MODERADA","Inhibidor CYP3A4 — puede elevar niveles CBD transitoriamente","Precaución durante el tratamiento antibiótico."),
+    "Fluconazol":      ("ALTA",   "Inhibidor CYP2C9/CYP3A4 — eleva significativamente niveles CBD","Reducir dosis CBD 30-50% durante tratamiento antifúngico."),
+    "Metadona":        ("ALTA",   "Opioide — CYP3A4/CYP2D6. Riesgo QT prolongado aditivo","Monitoreo ECG. Riesgo arritmia grave. Vigilar depresión respiratoria."),
+    "Tramadol":        ("MODERADA","Opioide — sinergismo analgésico y sedante. Riesgo síndrome serotoninérgico con ISRS","Útil para reducción opioide. Vigilar depresión respiratoria."),
+    "Trazodona":       ("MODERADA","Antidepresivo — CYP3A4. Sedación aditiva. Puede potenciar efecto del CBD","Monitorear sedación. Útil en insomnio."),
+    "Venlafaxina":     ("LEVE",   "IRSN — CYP2D6. CBD puede elevar niveles ligeramente","Vigilar síntomas serotoninérgicos a dosis altas de THC."),
+    "Duloxetina":      ("LEVE",   "IRSN — CYP1A2/CYP2D6. Interacción leve","Combinación generalmente tolerada. Vigilar náuseas."),
+    "Mirtazapina":     ("MODERADA","Antidepresivo — sedación aditiva. CYP1A2/CYP3A4","Potencial sinergismo en insomnio y anorexia. Monitorear sedación."),
+    "Digoxina":        ("MODERADA","Glucósido cardíaco — CBD puede inhibir P-gp, elevando niveles digoxina","Monitorear niveles digoxina y ECG. Rango terapéutico estrecho."),
+    "Voriconazol":     ("ALTA",   "Inhibidor CYP2C9/CYP2C19/CYP3A4 — eleva marcadamente niveles CBD","Reducir dosis CBD. Monitoreo estrecho durante antifúngico."),
+    "Lorazepam":       ("MODERADA","BZD — depresores SNC. Potenciación sedante","Monitorear. Puede facilitar reducción BZD."),
+    "Midazolam":       ("MODERADA","BZD — CYP3A4. CBD puede elevar niveles midazolam","Usar con precaución. Monitorear sedación."),
+    "Clopidogrel":     ("MODERADA","Antiagregante — CYP2C19. CBD puede reducir conversión a metabolito activo","Monitorear eficacia antiagregante. Consultar hematología."),
+
+    # ══════════════════════════════════════════════════════
+    # ALIMENTOS CON INTERACCIÓN SIGNIFICATIVA
+    # ══════════════════════════════════════════════════════
+    "Toronja / Pomelo (jugo)":     ("ALTA",   "Inhibidor potente CYP3A4 — puede elevar niveles de CBD, THC y muchos fármacos concomitantes hasta 3x","Evitar durante tratamiento. Usar naranja o limón como alternativa."),
+    "Toronja / Pomelo (fruta)":    ("ALTA",   "Mismo mecanismo que el jugo — furanocumarinas inhiben CYP3A4 intestinal","Evitar completamente durante titulación."),
+    "Alcohol etílico":             ("CRITICA","Depresión SNC aditiva — potencia sedación, deterioro cognitivo y psicomotor. Aumenta riesgo psicosis con THC","Contraindicado durante tratamiento. Abstinencia obligatoria en conducción."),
+    "Café / Cafeína (exceso)":     ("LEVE",   "Estimulante — puede antagonizar efecto sedante del CBD. CYP1A2 compartido","Consumo moderado aceptable. Evitar >3 tazas/día durante titulación."),
+    "Tabaco (nicotina)":           ("MODERADA","Inductor CYP1A2 — fumadores activos metabolizan CBD más rápido. Reduce biodisponibilidad","Considerar mayor dosis en fumadores. Evitar fumar durante sesión sublingual."),
+    "Leche entera / grasas":       ("LEVE",   "CBD es lipofílico — alimentos grasos aumentan biodisponibilidad hasta 4x. Efecto positivo pero variable","Administrar siempre con alimentos grasos para mayor consistencia de absorción."),
+    "Aceite de coco / MCT":        ("LEVE",   "Vehículo ideal para CBD — aumenta absorción por sistema linfático","Beneficioso. La mayoría de aceites de cannabis usan MCT como base."),
+    "Té de hipericum (St. John's Wort / Hierba de San Juan)": ("ALTA", "Potente inductor CYP3A4/CYP2C9 — reduce niveles CBD y THC significativamente. También reduce anticonceptivos y antirretrovirales","Contraindicado durante tratamiento con cannabinoides."),
+    "Equinácea (suplemento)":      ("MODERADA","Inhibidor CYP3A4/CYP1A2 moderado — puede elevar niveles CBD","Evitar uso prolongado. Interacción variable según preparado."),
+    "Kava Kava":                   ("ALTA",   "Hepatotóxico + inhibidor CYP — riesgo hepatotoxicidad aditiva con CBD/valproato","Contraindicado. Riesgo de daño hepático severo."),
+    "Valeriana":                   ("MODERADA","Depresora SNC — potencia sedación de CBD. Mecanismo GABAérgico","Usar con precaución. Potencial beneficio en insomnio pero monitorear sedación."),
+    "Manzanilla (concentrada)":    ("LEVE",   "Inhibidor CYP1A2/CYP2C9 leve — interacción mínima a dosis habituales de infusión","Sin restricción en infusión normal. Precaución en extractos concentrados."),
+    "Ajo (suplemento alta dosis)": ("MODERADA","Inductor CYP3A4 a altas dosis — puede reducir niveles CBD. Efecto anticoagulante aditivo con warfarina","Dosis culinarias normales: seguras. Suplementos >900mg/día: precaución."),
+
+    # ══════════════════════════════════════════════════════
+    # SUPLEMENTOS Y VITAMINAS
+    # ══════════════════════════════════════════════════════
+    "Vitamina D3 (altas dosis)":   ("LEVE",   "CYP3A4 compartido — interacción farmacocinética menor","Sin restricción a dosis estándar. Monitroear a megadosis >10,000 UI/día."),
+    "Vitamina E (tocoferol)":      ("LEVE",   "Anticoagulante leve — puede potenciar efecto de warfarina","Sin restricción en dosis habituales. Precaución si usa anticoagulantes."),
+    "Omega-3 (EPA/DHA altas dosis)":("LEVE",  "Antiagregante plaquetario leve — aditivo con CBD y anticoagulantes","Beneficioso en general. Precaución con warfarina a dosis >3g/día."),
+    "Melatonina":                  ("MODERADA","Depresora SNC leve — sinergismo sedante con CBD nocturno","Potencial beneficio en insomnio. Iniciar con dosis baja. Monitorear somnolencia matutina."),
+    "5-HTP (5-hidroxitriptófano)": ("ALTA",   "Precursor serotonina — riesgo síndrome serotoninérgico con THC + ISRS","Evitar combinación triple THC + ISRS + 5-HTP."),
+    "Magnesio (gluconato/citrato)":("LEVE",   "Sin interacción farmacológica directa. Puede potenciar efecto relajante muscular","Generalmente beneficioso. Sin restricción."),
+    "CBD aislado (otro producto)": ("ALTA",   "Riesgo acumulación de dosis — doble fuente de CBD no controlada","Informar al médico de cualquier otro producto cannabinoide. Unificar fuente."),
+    "Curcumina (alta dosis)":      ("MODERADA","Inhibidor CYP3A4/CYP2C9 — puede elevar niveles CBD a dosis farmacológicas","Sin restricción culinaria. Precaución con suplementos >1g/día."),
+    "Resveratrol (suplemento)":    ("MODERADA","Inhibidor CYP3A4/CYP1A2 — puede elevar niveles CBD","Precaución a dosis altas. Sin restricción en vino tinto normal."),
+    "Glutatión (IV o alta dosis)": ("LEVE",   "Antioxidante — sin interacción directa. Puede modular metabolismo oxidativo","Sin restricción. Potencial efecto neuroprotector complementario."),
+    "Ashwagandha (Withania)":      ("MODERADA","Modulador CYP3A4 — interacción variable. Efecto ansiolítico puede potenciar CBD","Monitorear sedación aditiva. Evitar en pacientes con hipotiroidismo sin control."),
+    "Ginkgo biloba":               ("MODERADA","Inhibidor CYP2C19 — puede elevar niveles CBD. Efecto anticoagulante leve","Precaución con anticoagulantes. Suspender 2 semanas antes de cirugía."),
+    "Ginseng":                     ("LEVE",   "Modulador CYP3A4 — interacción leve. Efecto estimulante puede antagonizar sedación","Sin restricción habitual. Precaución en HTA y diabéticos."),
+    "DHEA (suplemento)":           ("MODERADA","Precursor hormonal — CYP3A4. Puede afectar metabolismo cannabinoide","Evitar sin supervisión médica. Interacción hormonal compleja."),
+    "Melatonina + valeriana (combinados)": ("ALTA", "Sinergia sedante triple con CBD — riesgo somnolencia diurna excesiva","Usar solo el CBD sin combinar sedantes. Si se usa, solo nocturno."),
+
+    # ══════════════════════════════════════════════════════
+    # HERBALES / PLANTAS MEDICINALES
+    # ══════════════════════════════════════════════════════
+    "Hierba de San Juan (St. John Wort)": ("ALTA", "Inductor CYP3A4/CYP2C9 potente — reduce niveles CBD, THC, anticonceptivos, antirretrovirales","Contraindicado. Muy usada en automedicación — preguntar siempre."),
+    "Pasiflora (Passiflora incarnata)":   ("MODERADA","Potencia sedación GABAérgica — efecto aditivo con CBD","Beneficiosa en ansiedad/insomnio pero monitorear sedación."),
+    "Lúpulo (Humulus lupulus)":           ("MODERADA","Sedante — potencia efecto cannabinoide. Sinergia en insomnio","Aditivo. Precaución en conducción."),
+    "Escutelaria (Scutellaria)":          ("MODERADA","Ansiolítica GABAérgica — sinergismo con CBD","Precaución en combinación. Vigilar sedación."),
+    "Albahaca sagrada / Tulsi":           ("LEVE",   "Adaptógeno — sin interacción CYP significativa conocida","Generalmente segura. Beneficiosa como adaptógeno."),
+    "Lavanda (aceite esencial oral)":     ("MODERADA","Sedante SNC leve. Linalool (terpeno compartido con cannabis) — potencia sedación","Precaución en uso oral/sublingual. Uso aromático: seguro."),
+    "Raíz de regaliz (Glycyrrhiza)":      ("MODERADA","Inhibidor CYP3A4 — puede elevar niveles CBD. Retención Na+/K+","Evitar con HTA. Precaución en uso prolongado."),
+    "Cúrcuma (Curcuma longa, alta dosis)":("MODERADA","Inhibidor CYP3A4/CYP2C9 — ver curcumina","Culinaria: segura. Cápsulas farmacológicas: precaución."),
+    "Jengibre (alta dosis terapéutica)":  ("LEVE",   "Inhibidor CYP3A4 leve — interacción mínima. Antiemético complementario","Beneficioso para náuseas. Sin restricción culinaria."),
+    "Piperina (pimienta negra, BioPerine)":("MODERADA","Inhibidor potente de glucuronidación y CYP3A4 — puede aumentar absorción CBD hasta 2x","Suplementos con BioPerine pueden aumentar efecto. Ajustar dosis."),
+    "Matricaria (Tanacetum parthenium)":  ("MODERADA","Antiagregante — efecto aditivo con cannabinoides y anticoagulantes","Evitar con warfarina. Suspender antes de cirugía."),
+    "Dong Quai (Angelica sinensis)":      ("ALTA",   "Inhibidor CYP2C9 — puede elevar warfarina y CBD. Fitoestrógeno","Evitar con anticoagulantes. Precaución en mujeres con antecedente hormonal."),
+    "Coenzima Q10 (CoQ10)":               ("LEVE",   "Sin interacción CYP directa. Cardioprotector complementario","Segura. Beneficiosa en pacientes con estatinas."),
+
+    # ══════════════════════════════════════════════════════
+    # FÁRMACOS ADICIONALES IMPORTANTES
+    # ══════════════════════════════════════════════════════
+    "Fentanilo":       ("ALTA",   "Opioide potente — CYP3A4. Depresión respiratoria aditiva. Índice terapéutico estrecho","Monitoreo estricto. Riesgo sobredosis. Potencial opioid-sparing beneficioso."),
+    "Oxcarbazepina":   ("ALTA",   "Inductor CYP3A4 moderado — reduce niveles CBD 20-30%","Monitorear eficacia CBD. Posible ajuste de dosis."),
+    "Tapentadol":      ("MODERADA","Opioide dual — sinergismo analgésico. CYP2D6","Potencial reducción de dosis opioide. Vigilar sedación."),
+    "Buprenorfina":    ("MODERADA","Opioide parcial — sinergismo. CBD puede potenciar efecto analgésico","Útil en deshabituación opioide + cannabinoides. Monitorear."),
+    "Naloxona":        ("ALTA",   "Antagonista opioide — puede bloquear parcialmente efectos del THC (receptor CB1/opioide cruzado)","Interacción compleja. Solo en urgencia. No usar profilácticamente."),
+    "Naltrexona":      ("MODERADA","Antagonista opioide — reduce euforia THC. Puede modular efecto CBD","Usada en deshabituación. Puede requerir ajuste dosis cannabinoide."),
+    "Atomoxetina":     ("MODERADA","CYP2D6 — CBD inhibe CYP2D6, puede elevar niveles atomoxetina","Monitorear FC y PA. Precaución en TDAH."),
+    "Lisdexanfetamina":("MODERADA","Estimulante — THC antagoniza efecto. CBD puede ayudar","Preferir CBD puro. Vigilar cardiovascular."),
+    "Modafinilo":      ("MODERADA","Inductor CYP3A4 moderado — puede reducir niveles CBD. Estimulante","Monitorear eficacia CBD. Ajuste posible."),
+    "Aripiprazol":     ("LEVE",   "Antipsicótico — CYP2D6/CYP3A4. Interacción leve","Combinación generalmente tolerada. Vigilar acatisia."),
+    "Paliperidona":    ("LEVE",   "Antipsicótico — sin interacción CYP significativa","Combinación generalmente segura."),
+    "Lurasidona":      ("ALTA",   "Antipsicótico — CYP3A4 exclusivo. Contraindicado con inhibidores/inductores potentes","Monitoreo estrecho. Ajuste de dosis si se usa con CBD."),
+    "Cariprazina":     ("MODERADA","Antipsicótico — CYP3A4. Interacción bidireccional posible","Monitorear efectos extrapiramidales y sedación."),
+    "Memantina":       ("LEVE",   "Antidemencia — sin interacción CYP directa. Mecanismo NMDA","Combinación segura. CBD puede ser neuroprotector complementario."),
+    "Donepezilo":      ("MODERADA","Inhibidor acetilcolinesterasa — CYP2D6/CYP3A4. CBD puede elevar niveles","Monitorear bradicardia y efectos colinérgicos."),
+    "Levodopa":        ("MODERADA","Antiparkinsoniano — CBD puede potenciar efecto y reducir discinesias","Potencial beneficio en Parkinson. Monitorear hipotensión."),
+    "Pramipexol":      ("LEVE",   "Agonista dopaminérgico — interacción directa no documentada","Vigilar hipotensión ortostática aditiva."),
+    "Sumatriptán":     ("MODERADA","Triptán — vasoconstricción. THC puede potenciar vasoconstricción cerebral","Usar CBD puro en migraña. Evitar THC con triptanes."),
+    "Ergotamina":      ("ALTA",   "Derivado ergotamínico — vasoconstrición intensa. CYP3A4. Riesgo isquemia","Contraindicado con THC. CBD: precaución. Alternativa: triptanes."),
+    "Hormona anticonceptiva oral": ("MODERADA","CYP3A4 — CBD puede reducir eficacia anticonceptiva. Documentado con antiepilépticos inductores","Usar método anticonceptivo de barrera adicional. Informar siempre."),
+    "Levotiroxina":    ("LEVE",   "Hormona tiroidea — sin interacción CYP directa. CBD puede modular función tiroidea","Monitorear TSH si se usa CBD regularmente. Ajustar dosis tiroides si necesario."),
+    "Tamoxifeno":      ("ALTA",   "Oncológico — CYP2D6/CYP3A4. CBD inhibe CYP2D6 reduciendo metabolismo a endoxifeno activo","Precaución en ca. mama hormonal. Consultar oncología obligatoriamente."),
+    "Imatinib":        ("ALTA",   "Antineoplásico — CYP3A4. CBD puede elevar niveles imatinib. Toxicidad hematológica","Solo con supervisión oncológica. Monitoreo hemograma."),
+    "Metotrexato":     ("MODERADA","Antimetabolito — no interacción CYP directa pero ambos tienen efecto hepatotóxico","Monitorear LFTs mensualmente. Precaución en dosis altas."),
+    "Colchicina":      ("ALTA",   "Antiinflamatorio — CYP3A4/P-gp. CBD puede elevar niveles. Índice terapéutico estrecho","Monitorear toxicidad GI y muscular. Ajustar dosis colchicina."),
+    "Sildenafil":      ("MODERADA","Inhibidor PDE5 — CYP3A4. CBD puede elevar niveles. Hipotensión aditiva","Precaución especialmente con THC (vasodilatación). Monitorear PA."),
+    "Tadalafil":       ("MODERADA","Inhibidor PDE5 — CYP3A4. Similar a sildenafil","Monitorear hipotensión. Precaución con THC."),
+    "Isotretinoína":   ("LEVE",   "Retinoide — sin interacción CYP directa. Ambos pueden afectar lípidos séricos","Monitorear triglicéridos. Sin restricción directa."),
+    "Clindamicina":    ("LEVE",   "Antibiótico — sin interacción CYP significativa","Segura. Sin restricción."),
+    "Metronidazol":    ("MODERADA","Antibiótico — inhibidor CYP2C9 leve. Puede elevar levemente CBD. Efecto antabús con alcohol","Evitar alcohol durante tratamiento. Monitorear si uso prolongado."),
+    "Ciprofloxacino":  ("MODERADA","Antibiótico — inhibidor CYP1A2. Puede elevar niveles CBD y cafeína","Precaución durante el curso antibiótico. Interacción transitoria."),
+    "Eritromicina":    ("MODERADA","Antibiótico — inhibidor CYP3A4. Puede elevar niveles CBD transitoriamente","Precaución. Interacción durante el curso del antibiótico."),
+    "Paroxetina":      ("MODERADA","ISRS — inhibidor potente CYP2D6. Puede elevar niveles THC. Síndrome serotoninérgico posible","Monitorear. Es el ISRS con mayor potencial de interacción."),
+    "Fluvoxamina":     ("ALTA",   "ISRS — inhibidor potente CYP1A2/CYP2C19/CYP3A4. Puede elevar significativamente niveles CBD","Monitoreo estrecho. Ajuste dosis CBD probable."),
+    "Nortriptilina":   ("MODERADA","ATC — CYP2D6. Similar a amitriptilina. Cardiotoxicidad aditiva posible","Monitorear ECG. Vigilar sedación y anticolinérgicos."),
+    "Clomipramina":    ("MODERADA","ATC — CYP2D6/CYP1A2. Riesgo convulsivo a altas dosis","CBD anticonvulsivo puede compensar. Monitorear niveles."),
+    "Imipramina":      ("MODERADA","ATC — CYP2D6/CYP3A4. Cardiotoxicidad. Sedación aditiva","Monitorear ECG y sedación."),
+    "Agomelatina":     ("MODERADA","Antidepresivo — CYP1A2/CYP2C9. Hepatotóxico. Riesgo aditivo con CBD","Monitorear LFTs. Verificar función hepática."),
+    "Desvenlafaxina":  ("LEVE",   "IRSN — menor inhibición CYP que venlafaxina. Interacción leve","Generalmente segura. Vigilar síntomas serotoninérgicos con THC."),
+    "Ziprasidona":     ("MODERADA","Antipsicótico — CYP3A4. QT prolongado aditivo con THC","Monitorear ECG. Evitar THC en QT largo."),
+    "Amisulprida":     ("LEVE",   "Antipsicótico — no metabolismo CYP. Eliminación renal","Segura desde farmacocinética. Vigilar prolactina."),
+    "Brexpiprazol":    ("MODERADA","Antipsicótico — CYP2D6/CYP3A4. Interacción bidireccional","Monitorear. Ajuste de dosis posible."),
+    "Furosemida":      ("LEVE",   "Diurético — sin interacción CYP directa. CBD puede tener efecto diurético leve","Monitorear electrolitos. Sin restricción directa."),
+    "Espironolactona": ("LEVE",   "Diurético/antiandrogénico — sin interacción CYP directa","Beneficiosa en HTA. Sin restricción."),
+    "Amlodipino":      ("MODERADA","Calcioantagonista — CYP3A4. CBD puede elevar niveles. Hipotensión aditiva","Monitorear PA. Ajuste posible de amlodipino."),
+    "Enalapril":       ("LEVE",   "IECA — sin interacción CYP. CBD puede potenciar efecto hipotensor","Monitorear PA. Beneficioso en HTA con ansiedad."),
+    "Losartán":        ("LEVE",   "ARA-II — CYP2C9 leve. CBD puede potenciar efecto hipotensor","Monitorear PA. Generalmente segura."),
 }
 
 COLORES_INTERACCION = {
@@ -692,13 +1060,40 @@ for k,v in _defs.items():
 
 def wa_url(t): return f"https://wa.me/{MI_NUMERO}/?text={urllib.parse.quote(t)}"
 
-def guardar_paciente(d):
-    f = "bd_pacientes.csv"
-    ex = os.path.isfile(f)
-    with open(f,"a",newline="",encoding="utf-8") as fp:
-        w = csv.DictWriter(fp, fieldnames=d.keys())
-        if not ex: w.writeheader()
-        w.writerow(d)
+def guardar_paciente(d: dict) -> int:
+    """Guarda paciente en SQLite y retorna el ID generado."""
+    with _conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO pacientes
+            (fecha,hora,nombres,dni,edad,sexo,ocupacion,ciudad,altitud,
+             motivo,cie10,cie11,dx_nombre,gad7,phq9,mejoria,
+             cbd_mg_ml,volumen_ml,gotas_dia,ratio,notas)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (d.get("fecha",""), d.get("hora",""), d.get("nombres",""),
+             d.get("dni",""), d.get("edad",0), d.get("sexo",""),
+             d.get("ocupacion",""), d.get("ciudad",""), d.get("altitud",0),
+             d.get("motivo",""), d.get("cie10",""), d.get("cie11",""),
+             d.get("dx_nombre",""), d.get("gad7",0), d.get("phq9",0),
+             d.get("mejoria",0), d.get("cbd_mg_ml",0), d.get("volumen_ml",0),
+             d.get("gotas_dia",0), d.get("ratio",""), d.get("notas",""))
+        )
+        conn.commit()
+        return cur.lastrowid
+
+# ══════════════════════════════════════════════════════════════
+#  TIMEOUT DE SESIÓN — 30 minutos de inactividad
+# ══════════════════════════════════════════════════════════════
+_TIMEOUT_MIN = 30
+if st.session_state.autenticado:
+    _ahora = datetime.now()
+    _ultimo = st.session_state.get("ultimo_acceso")
+    if _ultimo and (_ahora - _ultimo).seconds > _TIMEOUT_MIN * 60:
+        registrar_auditoria("TIMEOUT", "Sesión expirada por inactividad")
+        for k in ["autenticado","usuario","rol"]:
+            st.session_state[k] = False if k == "autenticado" else None
+        st.warning("⏱ Sesión expirada por inactividad. Por seguridad, inicie sesión nuevamente.")
+        st.rerun()
+    st.session_state["ultimo_acceso"] = _ahora
 
 # ══════════════════════════════════════════════════════════════
 #  SIDEBAR
@@ -758,11 +1153,27 @@ def render_progress(paso_actual):
     </div>
     """, unsafe_allow_html=True)
 
+def _guardar_paso_actual():
+    """Persiste todos los widgets con key en hc_data antes de cambiar de paso."""
+    # Widgets con key conocidos → persistir en hc_data
+    _keys_widget = [
+        "desc_enfermedad","obs_receta","plan_tx",
+        "gtt_in","sel_freq","tit_inc","tit_max","tit_inicio",
+        "mg_in","ml_in","n_frascos",
+        "ant_patologicos","ant_alergias","ant_hf",
+        "ant_cirugias","ant_alcohol","ant_tabaco",
+        "motivo_input",
+    ]
+    for k in _keys_widget:
+        if k in st.session_state:
+            st.session_state.hc_data[k] = st.session_state[k]
+
 def nav_btns(paso, total=7):
     st.markdown("<br>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1,3,1])
     with c1:
         if paso > 0 and st.button("← Anterior", use_container_width=True):
+            _guardar_paso_actual()
             st.session_state.paso_hc = paso - 1; st.rerun()
     with c2:
         pct = int((paso+1)/total*100)
@@ -773,6 +1184,7 @@ def nav_btns(paso, total=7):
     with c3:
         if paso < total-1:
             if st.button("Siguiente →", use_container_width=True, type="primary"):
+                _guardar_paso_actual()
                 st.session_state.paso_hc = paso + 1; st.rerun()
 
 def card(titulo):
@@ -877,8 +1289,47 @@ if modulo == "📋 Historia Clínica":
         # Guardar en hc_data
         st.session_state.hc_data.update({
             "fecha_hc":fecha_hc,"nombres":nombres,"dni":dni,"edad":edad,
-            "sexo":sexo,"altitud":altitud
+            "sexo":sexo if sexo != "Seleccione..." else "",
+            "altitud":altitud
         })
+
+        # ── Consentimiento informado digital ──
+        st.markdown("<br>", unsafe_allow_html=True)
+        card("✅ CONSENTIMIENTO INFORMADO — PROTECCIÓN DE DATOS")
+        st.markdown("""
+        <div style='background:#0a1a10;border:1px solid #2d5a27;border-radius:8px;
+                    padding:1rem 1.25rem;font-size:0.82rem;color:#8a9a8a;line-height:1.7;'>
+          <strong style='color:#4dc8b4;'>Autorización del paciente (Ley N° 29733 — Perú):</strong><br>
+          El paciente <strong style='color:#f5f5f0;'>autoriza expresamente</strong> al Dr. J. Carlos Jara Ovalle
+          (RNA A10684 · CMP 82817) a registrar, almacenar y procesar sus datos de salud en la plataforma
+          EVIPro con fines exclusivamente clínicos y terapéuticos.<br><br>
+          <strong style='color:#4dc8b4;'>Ley N° 30681 — Cannabis medicinal:</strong><br>
+          El paciente declara haber recibido información sobre el tratamiento con cannabinoides medicinales,
+          sus efectos, riesgos potenciales y alternativas terapéuticas disponibles.<br><br>
+          <span style='font-size:0.75rem;color:#5a7a5a;'>
+          Los datos serán tratados con confidencialidad. No serán compartidos sin autorización expresa
+          del paciente, salvo obligación legal. Puede revocar este consentimiento en cualquier momento.
+          </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        _cons1 = st.checkbox(
+            "☑ El paciente autoriza el almacenamiento de sus datos de salud (Ley 29733)",
+            key="cons_ley29733"
+        )
+        _cons2 = st.checkbox(
+            "☑ El paciente confirma haber sido informado sobre el tratamiento cannabinoide (Ley 30681)",
+            key="cons_ley30681"
+        )
+
+        if _cons1 and _cons2:
+            st.success("✅ Consentimiento registrado — puede continuar con la historia clínica.")
+            st.session_state.hc_data["consentimiento"] = True
+            st.session_state.hc_data["cons_fecha"] = datetime.now().strftime("%d/%m/%Y %H:%M")
+        else:
+            st.warning("⚠️ Se requiere el consentimiento del paciente para continuar.")
+            st.session_state.hc_data["consentimiento"] = False
+
         nav_btns(paso)
 
     # ════════════════════════════════════════════════════════
@@ -1593,111 +2044,142 @@ if(_nutr_ok) calcNut();
 
         card("3.5 ANTECEDENTES")
 
-        with st.expander("🩺 Patológicos personales", expanded=True):
-            ap1, ap2 = st.columns(2)
-            ap1.text_area("Enfermedades previas y actuales", height=90,
-                          placeholder="Ej: HTA desde 2018, DM2 diagnosticada 2020...",
-                          key="ant_patologicos")
-            ap2.text_area("Alergias (medicamentos, alimentos, ambiente)", height=90,
-                          placeholder="Ej: Alergia a penicilina, alergia al polvo...",
-                          key="ant_alergias")
-            st.text_area("Antecedentes heredofamiliares (énfasis psiquiátrico y oncológico)", height=70,
-                         placeholder="Ej: Padre con DM2, madre con depresión...",
-                         key="ant_familiares")
+        # ── Helper: fila de antecedente rápido ──
+        def ant_row(label, key_base, icon="🔹", año=True, detalle_ph="Especificar..."):
+            """Fila compacta: estado + año + detalle condicional"""
+            c1, c2, c3 = st.columns([2, 1, 3])
+            estado = c1.radio(
+                f"{icon} {label}", ["Niega","Sí","No refiere"],
+                horizontal=True, key=f"{key_base}_est",
+                label_visibility="visible"
+            )
+            if estado == "Sí":
+                if año:
+                    yr = c2.number_input("Año aprox.", 1950, 2026,
+                                         value=2020, step=1,
+                                         key=f"{key_base}_año",
+                                         label_visibility="visible")
+                detalle = c3.text_input("Detalle", placeholder=detalle_ph,
+                                        key=f"{key_base}_det",
+                                        label_visibility="collapsed")
+                st.session_state.hc_data[key_base] = f"{estado} ({yr if año else ''}) — {detalle}"
+            else:
+                st.session_state.hc_data[key_base] = estado
+            return estado
 
-        with st.expander("🔪 Cirugías e intervenciones"):
-            cir1, cir2 = st.columns(2)
-            cir1.text_area("Cirugías previas (tipo, año, complicaciones)", height=80,
-                           placeholder="Ej: Apendicectomía 2015, sin complicaciones...",
-                           key="ant_cirugias")
-            cir2.text_area("Hospitalizaciones relevantes", height=80,
-                           placeholder="Ej: Hospitalización por neumonía 2019...",
-                           key="ant_hospitalizaciones")
-            st.text_input("Implantes / prótesis / dispositivos",
-                          placeholder="Ej: DIU, marcapasos, prótesis de rodilla...",
-                          key="ant_implantes")
+        # ══════════════════════════════════════════════════
+        # PATOLÓGICOS PERSONALES — siempre visibles
+        # ══════════════════════════════════════════════════
+        st.markdown("""<div style='font-size:10px;color:#4dc8b4;letter-spacing:2px;
+            font-weight:700;margin:8px 0 6px;'>PATOLÓGICOS PERSONALES</div>""",
+            unsafe_allow_html=True)
 
-        with st.expander("🌿 Cannabis — Antecedentes de uso"):
-            cv1, cv2, cv3 = st.columns(3)
-            cons_prev2 = cv1.radio("¿Consumo previo de Cannabis?", ["No","Sí"],
-                                   horizontal=True, key="cons_cannabis")
-            if cons_prev2 == "Sí":
-                edad_ini2 = cv2.number_input("Edad de inicio (años)", 0, 80, 18, key="cannabis_edad_ini")
-                via_can   = cv3.selectbox("Vía de consumo", ["Fumado","Vaporizado","Oral/Comestible","Sublingual","Otros"], key="cannabis_via")
-                cc1, cc2, cc3 = st.columns(3)
-                freq_can  = cc1.selectbox("Frecuencia de uso", ["Ocasional","Semanal","Diario","Múltiple/día"], key="cannabis_freq")
-                impacto2  = cc2.selectbox("Primer impacto subjetivo", ["Positivo","Negativo","Neutro"], key="cannabis_impacto")
-                tiempo_can = cc3.text_input("Tiempo de uso total", placeholder="Ej: 3 años", key="cannabis_tiempo")
-                if edad_ini2 < 18:
-                    st.warning(f"⚠️ Inicio a los {edad_ini2} años — Consumo en adolescencia. Mayor riesgo de vulnerabilidad neurológica (receptor CB1 en desarrollo).")
-                st.text_area("Motivo de uso y efectos reportados", height=60,
-                             placeholder="Ej: Dolor crónico, ansiedad, insomnio. Refiere mejoría del sueño...",
-                             key="cannabis_notas")
+        _enf_comunes = [
+            ("Hipertensión arterial",           "pat_hta",   "🫀", "Medicación actual, control..."),
+            ("Diabetes mellitus",               "pat_dm",    "🩸", "Tipo, medicación, control glucémico..."),
+            ("Dislipidemia",                    "pat_disli", "💊", "Colesterol total, estatinas..."),
+            ("Cardiopatía / Arritmia",          "pat_cardio","❤️", "Tipo, tratamiento actual..."),
+            ("Asma / EPOC",                     "pat_resp",  "🫁", "Tipo, inhaladores, crisis..."),
+            ("Enfermedad renal / Hepática",     "pat_renal", "🔬", "Tipo, función renal/hepática..."),
+            ("Epilepsia / Convulsiones",        "pat_epilep","🧠", "Tipo, fármacos, última crisis..."),
+            ("Enfermedad autoinmune",           "pat_autoinm","🛡️","Tipo, inmunosupresores..."),
+            ("Cáncer / Oncológico",             "pat_cancer","🎗️", "Tipo, estadio, tratamiento..."),
+            ("Cirugías previas",                "pat_cir",   "🔪", "Tipo, año, complicaciones..."),
+            ("Hospitalizaciones",               "pat_hosp",  "🏥", "Motivo, año, duración..."),
+            ("Implantes / Prótesis",            "pat_impl",  "🦾", "DIU, marcapasos, prótesis..."),
+        ]
 
-        with st.expander("🍺 Alcohol — Antecedentes de uso"):
-            al_prev = st.radio("¿Consume alcohol actualmente?", ["No","Ocasional","Frecuente","Diario"],
-                               horizontal=True, key="alcohol_uso")
-            if al_prev != "No":
-                alc1, alc2, alc3 = st.columns(3)
-                tipo_beb  = alc1.multiselect("Tipo de bebida", ["Cerveza","Vino","Licor destilado","Chicha","Otros"], key="alcohol_tipo")
-                anos_alc  = alc2.number_input("Años de consumo", 0, 60, 5, key="alcohol_anos")
-                intentos  = alc3.radio("¿Ha intentado dejar?", ["No","Sí, sin éxito","Sí, actualmente abstinente"], horizontal=False, key="alcohol_intentos")
-                st.text_area("Observaciones sobre consumo de alcohol", height=55,
-                             placeholder="Ej: Consumo social, aumentó durante pandemia...",
-                             key="alcohol_notas")
+        for label, key, icon, ph in _enf_comunes:
+            ant_row(label, key, icon, True, ph)
+            st.markdown("<hr style='margin:2px 0;border-color:#0f2030;'>", unsafe_allow_html=True)
 
-        with st.expander("💊 Drogas y otras sustancias"):
-            dr1, dr2 = st.columns(2)
-            drogas_uso = dr1.multiselect("Sustancias utilizadas",
-                ["Tabaco/nicotina","Cocaína/pasta base","Opioides","Benzodiacepinas (automedicación)",
-                 "Estimulantes (anfetaminas)","Alucinógenos","Solventes","Otras"],
-                key="drogas_tipo")
-            if drogas_uso:
-                dr2.text_area("Frecuencia, tiempo de uso y última vez", height=80,
-                              placeholder="Ej: Cocaína, uso ocasional, última vez hace 6 meses...",
-                              key="drogas_detalle")
-                if "Opioides" in drogas_uso:
-                    st.error("🚨 Uso de opioides — evaluar tolerancia y posibles interacciones con cannabinoides (depresión SNC).")
-                if "Benzodiacepinas (automedicación)" in drogas_uso:
-                    st.warning("⚠️ Benzodiacepinas sin prescripción — riesgo de dependencia y potenciación sedante con CBD.")
+        # Alergias y heredofamiliares siempre visibles
+        st.markdown("""<div style='font-size:10px;color:#4dc8b4;letter-spacing:2px;
+            font-weight:700;margin:10px 0 6px;'>ALERGIAS Y ANTECEDENTES FAMILIARES</div>""",
+            unsafe_allow_html=True)
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        # Toxicológico cuantitativo (antes 3.2 ahora dentro de 3.4)
-        with st.expander("📊 3.5.1 Riesgos toxicológicos cuantitativos", expanded=False):
-            card("TABACO — ÍNDICE TABÁQUICO")
-            t1,t2,t3 = st.columns(3)
-            cig  = t1.number_input("Cigarros/día", 0, key="cig_dia")
-            anos = t2.number_input("Años fumando", 0, key="cig_anos")
-            it   = (cig * anos) / 20
-            t3.metric("Índice Tabáquico", f"{it:.1f} paq/año")
-            if cig > 0:
-                if it >= 20:
-                    st.error(f"🚨 IT {it:.1f} paq/año — Riesgo muy alto de EPOC y cáncer. Cesación tabáquica urgente.")
-                elif it >= 10:
-                    st.warning(f"⚠️ IT {it:.1f} paq/año — Riesgo alto. Considerar espirometría y consejería.")
-                elif it >= 5:
-                    st.warning(f"⚠️ IT {it:.1f} paq/año — Riesgo moderado. Intervención breve recomendada.")
-                else:
-                    st.info(f"ℹ️ IT {it:.1f} paq/año — Fumador activo. Registrar en historial.")
-                if cig >= 20:
-                    st.warning("⚠️ Interacción cannabis-tabaco: mayor riesgo de dependencia y efectos cardiovasculares.")
+        aler1, aler2 = st.columns(2)
+        aler1.text_area("Alergias conocidas", height=65,
+                        placeholder="Medicamentos, alimentos, ambiente, látex...",
+                        key="ant_alergias")
+        aler2.text_area("Antecedentes heredofamiliares", height=65,
+                        placeholder="Padre: HTA, DM2. Madre: depresión, cáncer mama...",
+                        key="ant_familiares")
 
-            st.markdown("---")
-            card("ALCOHOL — ETANOL DIARIO")
-            al1,al2,al3 = st.columns(3)
-            pct_alc  = al1.number_input("% alcohol", 0.0, 100.0, 4.5, key="alc_pct")
-            ml_alc   = al2.number_input("ml alcohol/día", 0, key="alc_ml")
-            etanol_g = (pct_alc * ml_alc * 0.8) / 100
-            al3.metric("Etanol diario", f"{etanol_g:.1f} g")
-            if etanol_g > 0:
-                if etanol_g >= 60:
-                    st.error(f"🚨 {etanol_g:.1f} g etanol/día — ALTO RIESGO. Hepatotoxicidad severa. Interacción crítica con cannabinoides.")
-                elif etanol_g >= 40:
-                    st.error(f"🚨 {etanol_g:.1f} g etanol/día — Consumo perjudicial (OMS). Evaluar dependencia.")
-                elif etanol_g >= 20:
-                    st.warning(f"⚠️ {etanol_g:.1f} g etanol/día — Riesgo moderado. Potencia efectos sedantes del cannabis.")
-                else:
-                    st.info(f"ℹ️ {etanol_g:.1f} g etanol/día — Consumo bajo riesgo.")
+        # ══════════════════════════════════════════════════
+        # TOXICOLÓGICO — siempre visible, compacto
+        # ══════════════════════════════════════════════════
+        st.markdown("""<div style='font-size:10px;color:#4dc8b4;letter-spacing:2px;
+            font-weight:700;margin:10px 0 6px;'>ANTECEDENTES TOXICOLÓGICOS</div>""",
+            unsafe_allow_html=True)
+
+        # Cannabis
+        tox1, tox2 = st.columns([1,2])
+        cons_can = tox1.radio("🌿 Cannabis previo", ["Niega","Sí","No refiere"],
+                              horizontal=True, key="cons_cannabis")
+        if cons_can == "Sí":
+            cx1,cx2,cx3,cx4 = st.columns(4)
+            cx1.number_input("Edad inicio", 0, 80, 18, key="cannabis_edad_ini")
+            cx2.selectbox("Frecuencia", ["Ocasional","Semanal","Diario","Múltiple/día"], key="cannabis_freq")
+            cx3.selectbox("Vía", ["Fumado","Vaporizado","Oral","Sublingual"], key="cannabis_via")
+            cx4.text_input("Tiempo total", placeholder="Ej: 3 años", key="cannabis_tiempo")
+            tox2.text_input("Motivo / efectos referidos",
+                           placeholder="Dolor, ansiedad, insomnio — refiere mejoría del sueño...",
+                           key="cannabis_notas")
+            if st.session_state.get("cannabis_edad_ini",18) < 18:
+                st.warning("⚠️ Inicio en adolescencia — mayor riesgo neurológico (receptor CB1 en desarrollo).")
+
+        st.markdown("<hr style='margin:4px 0;border-color:#0f2030;'>", unsafe_allow_html=True)
+
+        # Alcohol
+        al_prev = st.radio("🍺 Alcohol", ["Niega","Ocasional","Frecuente","Diario","Ex-consumidor"],
+                           horizontal=True, key="alcohol_uso")
+        if al_prev not in ("Niega",):
+            alx1, alx2, alx3, alx4 = st.columns(4)
+            alx1.number_input("Años de consumo", 0, 60, 5, key="alcohol_anos")
+            alx2.multiselect("Tipo bebida", ["Cerveza","Vino","Licor","Chicha","Otros"],
+                             key="alcohol_tipo")
+            # Cálculo etanol inline
+            _pct = alx3.number_input("% alcohol", 0.0, 100.0, 4.5, key="alc_pct")
+            _ml  = alx4.number_input("ml/día", 0, 2000, 330, key="alc_ml")
+            _etg = round((_pct * _ml * 0.8) / 100, 1)
+            if _etg > 0:
+                _col = "#FF4444" if _etg>=40 else "#FFB300" if _etg>=20 else "#4dc8b4"
+                st.markdown(f"<div style='font-size:11px;color:{_col};padding:2px 0;'>"
+                            f"Etanol estimado: <strong>{_etg} g/día</strong>"
+                            f"{'  🚨 ALTO RIESGO — interacción crítica con cannabinoides' if _etg>=40 else ''}"
+                            f"{'  ⚠️ Riesgo moderado' if 20<=_etg<40 else ''}"
+                            f"</div>", unsafe_allow_html=True)
+
+        st.markdown("<hr style='margin:4px 0;border-color:#0f2030;'>", unsafe_allow_html=True)
+
+        # Tabaco
+        tab_uso = st.radio("🚬 Tabaco / Nicotina",
+                           ["Niega","Fumador activo","Ex-fumador","Fumador pasivo"],
+                           horizontal=True, key="tabaco_uso")
+        if tab_uso in ("Fumador activo","Ex-fumador"):
+            tb1,tb2,tb3 = st.columns(3)
+            _cig  = tb1.number_input("Cigarros/día", 0, 100, 10, key="cig_dia")
+            _anos = tb2.number_input("Años fumando", 0, 60, 10, key="cig_anos")
+            _it   = round((_cig * _anos) / 20, 1)
+            tb3.metric("Índice Tabáquico", f"{_it} paq/año",
+                       delta="⚠ Riesgo alto" if _it>=10 else None)
+
+        st.markdown("<hr style='margin:4px 0;border-color:#0f2030;'>", unsafe_allow_html=True)
+
+        # Otras sustancias
+        drogas_uso = st.multiselect("💊 Otras sustancias",
+            ["Cocaína/pasta base","Opioides","Benzodiacepinas (automedicación)",
+             "Estimulantes (anfetaminas)","Alucinógenos","Solventes","Otras"],
+            key="drogas_tipo")
+        if drogas_uso:
+            st.text_input("Frecuencia, tiempo y última vez",
+                         placeholder="Ej: Cocaína ocasional, última vez hace 6 meses...",
+                         key="drogas_detalle")
+            if "Opioides" in drogas_uso:
+                st.error("🚨 Opioides — evaluar tolerancia y depresión SNC con cannabinoides.")
+            if "Benzodiacepinas (automedicación)" in drogas_uso:
+                st.warning("⚠️ BZD sin prescripción — potenciación sedante con CBD.")
 
         nav_btns(paso)
 
@@ -1760,21 +2242,65 @@ if(_nutr_ok) calcNut();
 
         st.markdown("<br>", unsafe_allow_html=True)
         card("4.2 CONCILIACIÓN FARMACOLÓGICA Y ALERTAS DE INTERACCIÓN CANNABINOIDE")
-        f1c,f2c,f3c,f4c = st.columns(4)
-        f_nom   = f1c.selectbox("Fármaco", ["Otro..."] + sorted(DB_FARMACOS))
-        f_input = f1c.text_input("Nombre libre", value="" if f_nom == "Otro..." else f_nom, key="f_input_libre")
-        f_mg    = f2c.text_input("Dosis (mg)")
-        f_h     = f3c.number_input("Cada (h)", 1, 24, 12)
-        f_t     = f4c.text_input("Tiempo de uso")
+
+        # ── Buscador inteligente: genérico + comercial + categoría ──
+        busq_col, cat_col = st.columns([2,1])
+        _busq = busq_col.text_input("🔍 Buscar fármaco (genérico o comercial)",
+                    placeholder="Ej: Keppra, Levetiracetam, Valproato, Rivotril...",
+                    key="busq_farmaco")
+        _cat  = cat_col.selectbox("Categoría", ["Todas"] + list(DB_FARMACOS_CATEGORIAS.keys()),
+                    key="cat_farmaco")
+
+        # Construir lista filtrada
+        if _busq:
+            _busq_l = _busq.lower().strip()
+            # Buscar en genéricos
+            _lista_gen = [f for f in DB_FARMACOS if _busq_l in f.lower()]
+            # Buscar en nombres comerciales → convertir a genérico
+            _lista_com = [v for k,v in COMERCIAL_A_GENERICO.items()
+                          if _busq_l in k.lower() and v not in _lista_gen]
+            _lista_filtrada = _lista_gen + _lista_com
+            # Mostrar si comercial → genérico
+            if _lista_com:
+                st.info(f"💊 Nombre comercial detectado → genérico: **{', '.join(_lista_com)}**")
+        elif _cat != "Todas":
+            _lista_filtrada = DB_FARMACOS_CATEGORIAS[_cat]
+        else:
+            _lista_filtrada = DB_FARMACOS
+
+        # Selector + preview de interacción inmediata
+        _f1, _f2, _f3, _f4 = st.columns([2,1,1,1])
+        f_nom = _f1.selectbox("Seleccionar", ["— seleccionar —"] + sorted(_lista_filtrada),
+                              key="sel_farmaco")
+
+        # Preview de interacción al seleccionar
+        if f_nom and f_nom != "— seleccionar —":
+            _inter_prev = INTERACCIONES_CBD.get(f_nom)
+            if _inter_prev:
+                _niv, _mec, _rec = _inter_prev
+                _col, _bg, _ico = COLORES_INTERACCION[_niv]
+                st.markdown(
+                    f"<div style='background:{_bg};border-left:3px solid {_col};"
+                    f"padding:6px 12px;border-radius:0 6px 6px 0;font-size:11px;margin-bottom:6px;'>"
+                    f"{_ico} <strong style='color:{_col}'>{_niv}</strong> — {_mec}</div>",
+                    unsafe_allow_html=True
+                )
+
+        f_mg = _f2.text_input("Dosis (mg)", key="f_mg_inp")
+        f_h  = _f3.number_input("Cada (h)", 1, 24, 12, key="f_h_inp")
+        f_t  = _f4.text_input("Tiempo de uso", key="f_t_inp")
+
         if st.button("➕ Agregar fármaco", use_container_width=True):
-            nombre_real = f_input if f_input else f_nom
-            if nombre_real and nombre_real != "Otro...":
+            # Resolver nombre comercial a genérico automáticamente
+            _nom_final = COMERCIAL_A_GENERICO.get(f_nom, f_nom)
+            if _nom_final and _nom_final != "— seleccionar —":
                 st.session_state.farmacos.append({
-                    "Medicamento": nombre_real,
-                    "Dosis": f"{f_mg}mg c/{f_h}h",
-                    "Tiempo": f_t,
-                    "Frecuencia": f"{f_h}h"
+                    "Medicamento": _nom_final,
+                    "Dosis":       f"{f_mg}mg c/{f_h}h" if f_mg else "—",
+                    "Tiempo":      f_t or "—",
+                    "Frecuencia":  f"{f_h}h"
                 })
+                st.rerun()
 
         if st.session_state.farmacos:
             st.dataframe(pd.DataFrame(st.session_state.farmacos)[["Medicamento","Dosis","Tiempo"]],
@@ -1871,6 +2397,19 @@ Siempre verificar con ficha técnica actualizada.</div>
                           2:"2 — Más de la mitad de los días",3:"3 — Casi todos los días"}
         fmt = lambda x: OPCIONES_PSICO[x]
 
+        # Contexto según diagnóstico previo
+        _cie_ps = st.session_state.hc_data.get("cie10","")
+        _dx_ps  = st.session_state.hc_data.get("dx_nombre","")
+        _es_psiq = any(_cie_ps.startswith(p) for p in ("F","6A","6B","6C","6D"))
+        _es_neuro = any(_cie_ps.startswith(p) for p in ("G","8A","8B"))
+
+        if _es_psiq:
+            st.info(f"📋 Dx registrado: **{_dx_ps}** ({_cie_ps}) — Psicometría especialmente relevante para este caso.")
+        elif _es_neuro:
+            st.info(f"🧠 Dx neurológico registrado: **{_dx_ps}** — Evaluar comorbilidad psicoemocional.")
+        else:
+            st.caption("La psicometría es parte del protocolo integral EVIPro para todos los pacientes.")
+
         st.markdown("""
         <div style='background:rgba(0,255,204,0.05);border-left:3px solid #00FFCC;
                     padding:0.85rem 1.1rem;border-radius:0 8px 8px 0;margin-bottom:1.5rem;font-size:0.95rem;'>
@@ -1966,20 +2505,21 @@ Siempre verificar con ficha técnica actualizada.</div>
             ]
             p_scores = []
             for key, preg in PHQ9:
-                if key == "p9":
-                    st.markdown("""
-                    <div style='background:rgba(255,68,68,0.07);border:1px solid rgba(255,68,68,0.3);
-                                border-radius:6px;padding:0.5rem 0.85rem;margin-bottom:0.5rem;font-size:0.82rem;'>
-                    ⚠️ <strong>Ítem de seguridad clínica</strong> — Cualquier respuesta mayor a "Nunca" requiere
-                    evaluación de riesgo inmediata y activación de protocolo de seguridad.
-                    </div>""", unsafe_allow_html=True)
                 st.markdown(f"<div style='font-size:0.95rem;color:#dde8f0;font-weight:400;margin-bottom:4px;'>{preg}</div>", unsafe_allow_html=True)
                 v = st.radio(preg,[0,1,2,3],format_func=fmt,horizontal=True,key=f"phq_{key}",label_visibility="collapsed")
                 p_scores.append(v)
+                # Ítem 9 — alerta SOLO si respuesta > 0
+                if key == "p9" and v > 0:
+                    st.error(
+                        "🚨 ALERTA DE SEGURIDAD CLÍNICA — Ítem 9 positivo\n\n"
+                        f"Respuesta: **{fmt(v)}** — Requiere evaluación de riesgo inmediata.\n\n"
+                        "**Protocolo:** Evaluar ideación, plan e intención. "
+                        "Activar red de apoyo. Contacto médico urgente. "
+                        "Línea de crisis Perú: **113** (Salud Mental)."
+                    )
+                elif key == "p9" and v == 0:
+                    pass  # Sin alerta si responde Nunca
                 st.markdown("<hr style='border-color:#0f2030;margin:0.75rem 0;'>", unsafe_allow_html=True)
-
-            if p_scores[-1] > 0:
-                st.error("🚨 ALERTA VITAL — Ítem 9 positivo. Activar protocolo de contención y evaluación de riesgo de inmediato.")
 
             total_p = sum(p_scores)
             st.markdown("**¿Qué tan difícil le ha resultado hacer su trabajo, atender su hogar o relacionarse con otras personas?**")
@@ -2136,9 +2676,93 @@ Siempre verificar con ficha técnica actualizada.</div>
 
         st.markdown("<br>", unsafe_allow_html=True)
         card("6.2 PLAN TERAPÉUTICO")
-        plan_tx = st.text_area("Plan de tratamiento", height=110,
-                     placeholder="Indicaciones, metas terapéuticas, seguimiento programado...",
-                     key="plan_tx")
+
+        # ── Autollenado plan terapéutico según hallazgos ──
+        d_plan = st.session_state.hc_data
+        _cie_pl   = d_plan.get("cie10","")
+        _cie11_pl = d_plan.get("cie11","")
+        _dx_pl    = d_plan.get("dx_nombre","")
+        _gad_pl   = d_plan.get("gad7", 0)
+        _phq_pl   = d_plan.get("phq9", 0)
+        _edad_pl  = d_plan.get("edad", 30)
+        _alt_pl   = d_plan.get("altitud", 0)
+        _peso_pl  = d_plan.get("peso", 0)
+        _farmacos_pl = [f["Medicamento"] for f in st.session_state.farmacos]
+
+        def _generar_plan():
+            lineas = []
+
+            # Objetivo principal
+            if _dx_pl:
+                lineas.append(f"Dx principal: {_dx_pl} ({_cie_pl})")
+
+            # Protocolo cannabinoide base
+            lineas.append("Iniciar terapia con cannabinoides medicinales — protocolo de titulación gradual según tolerancia y respuesta clínica.")
+
+            # Por diagnóstico
+            if _cie_pl.startswith(("G40","G41","8A6")):
+                lineas.append("Epilepsia: escalar CBD 1 gota cada 7 días. No suspender antiepilépticos sin supervisión neurológica. Control EEG a las 8 semanas.")
+            elif _cie_pl.startswith(("F32","F33","6A7")):
+                lineas.append("Depresión: ratio CBD:THC ≥10:1. Psicoterapia complementaria. Reevaluar PHQ-9 en 4 semanas.")
+            elif _cie_pl.startswith(("F40","F41","F43","6B0")):
+                lineas.append("Ansiedad: dosis nocturna prioritaria. Técnicas de relajación complementarias. GAD-7 de control en 4 semanas.")
+            elif _cie_pl.startswith(("M54","M79","FA9","MG3")):
+                lineas.append("Dolor crónico: considerar tópico cannabinoide en zona afectada. Fisioterapia complementaria. EVA de control mensual.")
+            elif _cie_pl.startswith(("F51","G47","7B0")):
+                lineas.append("Insomnio: dosis única sublingual 30-45 min antes de dormir. Higiene del sueño estricta. Registro de horas de sueño.")
+            elif _cie_pl.startswith(("C","2A","2B","2C","2D")):
+                lineas.append("Oncología: coordinación con oncólogo tratante obligatoria. Cannabinoides como coadyuvante para náuseas, dolor y calidad de vida.")
+            elif _cie_pl.startswith(("G20","8A0")):
+                lineas.append("Parkinson: CBD para rigidez y calidad de vida. No suspender levodopa. Evaluación neurológica mensual.")
+
+            # Psicometría
+            if _gad_pl >= 10 and _phq_pl >= 10:
+                lineas.append(f"Compromiso psicoemocional significativo (GAD-7:{_gad_pl}, PHQ-9:{_phq_pl}) — interconsulta psicología/psiquiatría prioritaria.")
+            elif _gad_pl >= 15:
+                lineas.append(f"Ansiedad severa (GAD-7:{_gad_pl}) — considerar interconsulta psiquiatría.")
+            elif _phq_pl >= 15:
+                lineas.append(f"Depresión severa (PHQ-9:{_phq_pl}) — interconsulta psiquiatría urgente.")
+
+            # Interacciones críticas
+            criticos = [f for f in _farmacos_pl
+                        if f in ["Warfarina","Clobazam","Valproato","Ciclosporina","Tacrolimus",
+                                 "Fenitoína","Fenobarbital","Stiripentol","Fluvoxamina"]]
+            if criticos:
+                lineas.append(f"ALERTA — interacción crítica con: {', '.join(criticos)}. Monitoreo clínico estricto. Ver sección 4.2.")
+
+            # Altitud
+            if _alt_pl >= 3000:
+                lineas.append(f"Alta altitud ({_alt_pl} msnm) — reducir dosis inicial 20-30%. Biodisponibilidad aumentada.")
+
+            # Edad
+            if _edad_pl >= 65:
+                lineas.append("Adulto mayor: iniciar con dosis mínima. Vigilar caídas y somnolencia diurna.")
+            elif _edad_pl < 18:
+                lineas.append("Paciente menor de edad: CBD puro exclusivamente. Consentimiento informado de padres/tutores obligatorio.")
+
+            # Seguimiento estándar
+            lineas.append("Control en 2-4 semanas para evaluación de respuesta y ajuste de dosis.")
+            lineas.append("Indicaciones generales: hidratación ≥2L/día, ejercicio aeróbico moderado, abstinencia de alcohol.")
+
+            return "\n• ".join([""] + lineas).strip()
+
+        _plan_auto = _generar_plan()
+
+        # Valor inicial: si ya hay plan guardado usarlo, sino usar el autogenerado
+        _plan_default = d_plan.get("plan_tx", "") or _plan_auto
+
+        pc1, pc2 = st.columns([3,1])
+        with pc1:
+            plan_tx = st.text_area("Plan de tratamiento", height=160,
+                         value=_plan_default,
+                         key="plan_tx")
+        with pc2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("✨ Autocompletar plan", use_container_width=True):
+                st.session_state["plan_tx"] = _plan_auto
+                st.rerun()
+            st.caption("Basado en: dx, psicometría, fármacos, edad, altitud")
+
         st.session_state.hc_data["plan_tx"] = plan_tx
         nav_btns(paso)
 
@@ -2191,6 +2815,23 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
                               if st.session_state.r_ml in [5,10,15,20,25,30,50,60,100] else 1,
                               key="ml_in")
 
+        # Cantidad de frascos — conectado a la receta
+        _fc1, _fc2 = st.columns([1,3])
+        n_frascos = _fc1.number_input("Cantidad de frascos", 1, 12, 1, key="n_frascos")
+        _total_ml  = vol_ml * n_frascos
+        _total_mg  = _total_ml * mg_ml
+        _total_dias = int((_total_ml * 20) / st.session_state.r_gotas) if st.session_state.r_gotas > 0 else 0
+        _fc2.markdown(
+            f"<div style='background:#0d1b26;border:1px solid #1e3a50;border-radius:8px;"
+            f"padding:0.55rem 1rem;margin-top:28px;font-size:0.85rem;color:#4dc8b4;'>"
+            f"📦 {n_frascos} frasco{'s' if n_frascos>1 else ''} × {vol_ml}ml = "
+            f"<strong>{_total_ml}ml</strong> · "
+            f"<strong>{_total_mg:,}mg</strong> totales · "
+            f"duración estimada <strong>~{_total_dias} días</strong></div>",
+            unsafe_allow_html=True
+        )
+        st.session_state.hc_data["n_frascos"] = n_frascos
+
         st.markdown("<br>", unsafe_allow_html=True)
         card("7.2 PLAN DE TITULACIÓN")
         d1r,d2r,d3r = st.columns(3)
@@ -2203,7 +2844,15 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
             st.metric("Dosis diaria real", f"{dosis_d:.1f} mg")
             if dosis_d > 50: st.warning("⚠️ Dosis alta")
         dias = (vol_ml * 20) // gtt_dia if gtt_dia > 0 else 0
-        st.info(f"💡 El frasco de {vol_ml}ml durará aproximadamente **{dias} días** con esta dosis.")
+        # Duración real considerando titulación: promedio entre inicio y máximo
+        _gtt_max_est = st.session_state.get("tit_max", max(gtt_dia*3, 20))
+        _gtt_prom    = (gtt_dia + _gtt_max_est) / 2
+        _dias_tit    = int((vol_ml * 20) / _gtt_prom) if _gtt_prom > 0 else dias
+        st.info(
+            f"💡 Con **{gtt_dia} gotas/día** iniciales → duración **{dias} días**. "
+            f"Considerando titulación hasta {_gtt_max_est} gotas/día → "
+            f"duración real estimada **~{_dias_tit} días** por frasco."
+        )
 
         t1r,t2r,t3r = st.columns(3)
         gtt_inicio = t1r.number_input("Dosis inicio (gotas/día)", 1, 30, gtt_dia, key="tit_inicio")
@@ -2281,7 +2930,8 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
         # Calcular mg/gota y dosis real
         mg_gota_p = mg_p / 20
         dosis_real = round(gtt_p * mg_gota_p, 1)
-        dias_trat  = int((vol_p * 20) / gtt_p) if gtt_p > 0 else 0
+        n_frascos_r = d.get("n_frascos", st.session_state.get("n_frascos", 1))
+        dias_trat   = int((vol_p * n_frascos_r * 20) / gtt_p) if gtt_p > 0 else 0
 
         # Terpenos seleccionados
         terpenos_sel = [t for t in ["Mirceno","Limoneno","Linalool","Pineno","Cariofileno"]
@@ -2299,7 +2949,10 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
         _phq   = d.get("phq9", 0)
         _alt   = d.get("altitud", 0)
         _edad_ind = d.get("edad", 30)
-        _plan  = d.get("plan_tx","")
+        _plan_raw = d.get("plan_tx","") or st.session_state.get("plan_tx","")
+        # Limpiar bullets y guiones para presentación en receta
+        import re as _re
+        _plan  = ' '.join(x.lstrip('•- ') for x in _plan_raw.splitlines() if x.strip()) if _plan_raw else ""
 
         # También leer diagnósticos secundarios
         _cie10_s1 = d.get("cie10_sec1","")
@@ -2456,20 +3109,42 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
             "Conservar el aceite en lugar fresco, oscuro y seco. "
             "No compartir la receta ni la medicación."
         )
-        _ind_texto = " ".join(_indicaciones) if _indicaciones else ""
+        # Convertir lista de indicaciones a HTML con ítems visuales
+        def _lista_html(items, color="#2d6b2d", icon="●"):
+            if not items: return ""
+            html = "<ul style='margin:0;padding:0;list-style:none;'>"
+            for item in items:
+                # Separar título del cuerpo si hay " — "
+                if " — " in item:
+                    titulo, cuerpo = item.split(" — ", 1)
+                    html += (f"<li style='margin-bottom:5px;padding-left:14px;text-indent:-14px;"
+                             f"text-align:justify;'>"
+                             f"<span style='color:{color};font-weight:700;'>{icon} {titulo}:</span> "
+                             f"{cuerpo}</li>")
+                else:
+                    html += (f"<li style='margin-bottom:5px;padding-left:14px;text-indent:-14px;"
+                             f"text-align:justify;'>"
+                             f"<span style='color:{color};'>{icon}</span> {item}</li>")
+            html += "</ul>"
+            return html
+
+        _ind_html  = _lista_html(_indicaciones, "#1a6b2a", "▶")
+        _ind_texto = " ".join(_indicaciones) if _indicaciones else ""  # para compatibilidad
 
         # Titulación dinámica (desde 7.2)
-        gtt_ini  = st.session_state.get("gtt_in", 1)
+        gtt_ini  = st.session_state.get("gtt_in", gtt_p)
         inc_dias = d.get("inc_dias", st.session_state.get("tit_inc", 3))
-        gtt_max  = d.get("gtt_maximo", st.session_state.get("tit_max", max(gtt_ini*3, 20)))
-        freq_rec = d.get("freq", st.session_state.get("sel_freq", "Cada 12h (AM/PM)"))
+        gtt_max  = d.get("gtt_maximo", st.session_state.get("tit_max", max(gtt_p*3, 20)))
+        freq_rec  = (d.get("freq")
+                     or st.session_state.get("sel_freq")
+                     or "Cada 12h (AM/PM)")
         filas_tit = []
         dia_cur = 1
         g_cur   = gtt_ini
         while g_cur <= min(gtt_max, gtt_ini + 7) and len(filas_tit) < 10:
-            if   g_cur <= gtt_ini + 1: fase = "Inducción"
-            elif g_cur <= gtt_ini + 3: fase = "Ajuste"
-            else:                      fase = "Mantenimiento"
+            if   g_cur <= gtt_ini:         fase = "Inducción"
+            elif g_cur <= gtt_ini + 3:   fase = "Ajuste"
+            else:                         fase = "Mantenimiento"
             filas_tit.append((dia_cur, dia_cur+inc_dias-1, g_cur, freq_rec, fase))
             dia_cur += inc_dias
             g_cur   += 1
@@ -2491,7 +3166,7 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
         )
 
         # ── Variables dinámicas para el HTML de la receta ──
-        ratio_r      = ratio if "ratio" in dir() else d.get("ratio","20:1")
+        ratio_r      = (st.session_state.get("r_ratio") or d.get("ratio") or "20:1")
         inc_dias_txt = f"1 gota cada {inc_dias} días"
 
         # Datos biométricos
@@ -2526,12 +3201,12 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
         ) if _farmacos_r else ""
 
         receta_html = f"""
-<div style="background:#ffffff;font-family:Georgia,serif;color:#1a2a1a;
+<div style="background:#ffffff;font-family:Georgia,serif;color:#1a2a1a;text-align:left;
             border:2px solid #2d5a27;border-radius:4px;
-            max-width:900px;margin:0 auto;overflow:hidden;">
+            max-width:100%;margin:0;overflow:hidden;">
 
   <div style="background:#1a4a1a;
-              padding:18px 28px;display:flex;justify-content:space-between;align-items:center;">
+              padding:14px 22px;display:flex;justify-content:space-between;align-items:center;">
     <div>
       <div style="font-size:22px;font-weight:700;color:#ffffff;letter-spacing:2px;">RECETA MÉDICA MAGISTRAL</div>
       <div style="font-size:11px;color:#8fcc8f;margin-top:3px;letter-spacing:1px;">
@@ -2559,7 +3234,7 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
   <div style="display:flex;background:#f9fdf9;">
 
     <!-- COLUMNA IZQUIERDA -->
-    <div style="width:52%;padding:20px 24px;border-right:1px solid #c8e6c8;">
+    <div style="width:52%;padding:14px 18px;border-right:1px solid #c8e6c8;">
 
       <!-- DATOS PACIENTE -->
       <div style="background:#e8f5e8;border:1px solid #4caf50;border-radius:6px;padding:12px 16px;margin-bottom:14px;">
@@ -2624,7 +3299,7 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
                 Frasco {vol_p} ml
               </td>
               <td style="padding:8px;border-bottom:1px solid #c8e6c8;text-align:center;font-weight:700;color:#2d6b2d;">
-                02
+                {str(n_frascos_r).zfill(2)}
               </td>
             </tr>
           </tbody>
@@ -2649,23 +3324,45 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
     </div>
 
     <!-- COLUMNA DERECHA -->
-    <div style="width:48%;padding:20px 20px;">
+    <div style="width:48%;padding:14px 16px;">
 
       <!-- POSOLOGÍA -->
-      <div style="margin-bottom:14px;">
-        <div style="font-size:9px;color:#2d6b2d;letter-spacing:2px;font-weight:700;margin-bottom:8px;
-                    border-bottom:2px solid #2d6b2d;padding-bottom:4px;">
+      <div style="margin-bottom:12px;">
+        <div style="font-size:8px;color:#2d6b2d;letter-spacing:2px;font-weight:700;margin-bottom:7px;
+                    border-bottom:2px solid #2d6b2d;padding-bottom:3px;">
           POSOLOGÍA E INDICACIONES
         </div>
-        <div style="font-size:11px;color:#1a2a1a;line-height:1.7;background:#f9fdf9;
-                    border-left:3px solid #4caf50;padding:10px 12px;border-radius:0 4px 4px 0;">
-          <strong>Posología:</strong> Vía sublingual. Iniciar con <strong>{gtt_p} gota{'s' if gtt_p != 1 else ''}</strong>
-          ({dosis_real} mg CBD) · <strong>{freq_rec}</strong>.<br>
-          Incrementar {inc_dias_txt} según tolerancia hasta máximo {gtt_max} gotas/día
-          ({round(gtt_max * mg_gota_p, 1)} mg/día).<br>
-          {obs_p}<br><br>
-          {('<strong>Protocolo clínico:</strong> ' + _ind_texto + '<br><br>') if _ind_texto else ''}
-          <strong>Indicaciones:</strong> {_indicaciones_base}
+
+        <!-- Bloque posología principal -->
+        <div style="background:#e8f5e8;border-radius:5px;padding:9px 12px;margin-bottom:8px;
+                    font-size:10.5px;color:#1a2a1a;line-height:1.65;text-align:justify;">
+          <strong style="color:#2d6b2d;">Vía de administración:</strong>
+          Sublingual. Retener bajo la lengua 60-90 segundos antes de deglutir.<br>
+          <strong style="color:#2d6b2d;">Dosis inicial:</strong>
+          <strong>{gtt_p} gota{'s' if gtt_p != 1 else ''}</strong>
+          ({dosis_real}&nbsp;mg&nbsp;CBD) &mdash; <strong>{freq_rec}</strong>.<br>
+          <strong style="color:#2d6b2d;">Titulación:</strong>
+          Incrementar {inc_dias_txt}. Techo terapéutico: {gtt_max}&nbsp;gotas/día
+          ({round(gtt_max * mg_gota_p, 1)}&nbsp;mg/día).<br>
+          <strong style="color:#2d6b2d;">Observaciones:</strong> {obs_p}
+        </div>
+
+        <!-- Protocolo clínico específico -->
+        {(
+          "<div style='background:#f0faf0;border-left:3px solid #2d6b2d;border-radius:0 5px 5px 0;"
+          "padding:8px 12px;margin-bottom:8px;font-size:10.5px;color:#1a2a1a;line-height:1.65;'>"
+          "<strong style='color:#2d6b2d;font-size:9px;letter-spacing:1px;'>PROTOCOLO CLÍNICO ESPECÍFICO</strong>"
+          + _ind_html +
+          "</div>"
+        ) if _indicaciones else ""}
+
+        <!-- Indicaciones generales -->
+        <div style="background:#f9fdf9;border:1px solid #c8e6c8;border-radius:5px;
+                    padding:8px 12px;font-size:10px;color:#3a5a3a;line-height:1.65;text-align:justify;">
+          <strong style="color:#2d6b2d;font-size:9px;letter-spacing:1px;display:block;margin-bottom:4px;">
+            INDICACIONES GENERALES
+          </strong>
+          {_indicaciones_base}
         </div>
       </div>
 
@@ -2725,7 +3422,7 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
             "<body style=\"margin:0;padding:6px;background:#0d1b0d\">"
             "<button class=\"pbtn\" onclick=\"window.print()\">IMPRIMIR / GUARDAR PDF</button>"
             + receta_html + "</body></html>",
-            height=920, scrolling=True
+            height=980, scrolling=True
         )
 
         # ── BOTONES FINALES ──
@@ -2953,6 +3650,8 @@ elif modulo == "🌿 Emergencia Cannábica":
 # ══════════════════════════════════════════════════════════════
 elif modulo == "📊 Auditoría":
     st.title("📊 Auditoría — Solo Lectura")
+
+    # Métricas generales
     s = stats_db()
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Expedientes totales", s["total"])
@@ -2960,24 +3659,100 @@ elif modulo == "📊 Auditoría":
     c3.metric("GAD-7 promedio", f"{s['gad_avg']:.1f}")
     c4.metric("PHQ-9 promedio", f"{s['phq_avg']:.1f}")
     st.divider()
-    df = leer_pacientes()
-    if not df.empty:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        col_exp1, col_exp2 = st.columns(2)
-        col_exp1.download_button(
-            "⬇ Exportar CSV completo",
-            df.to_csv(index=False).encode("utf-8"),
-            f"auditoria_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv", use_container_width=True)
-        resumen = f"EVIPro - Reporte de Auditoría\nFecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
-        resumen += f"Total expedientes: {s['total']}\nGAD-7 promedio: {s['gad_avg']:.1f}\nPHQ-9 promedio: {s['phq_avg']:.1f}\n"
-        col_exp2.download_button(
-            "⬇ Exportar resumen TXT",
-            resumen.encode("utf-8"),
-            f"resumen_{datetime.now().strftime('%Y%m%d')}.txt",
-            "text/plain", use_container_width=True)
-    else:
-        st.warning("Sin expedientes registrados aún.")
+
+    tab_log, tab_datos, tab_export = st.tabs([
+        "🔍 Log de acciones", "📋 Expedientes", "⬇ Exportaciones"
+    ])
+
+    with tab_log:
+        st.markdown("#### Registro de acciones del sistema")
+        try:
+            with _conn() as conn:
+                df_log = pd.read_sql(
+                    "SELECT fecha, usuario, rol, accion, detalle "
+                    "FROM auditoria ORDER BY id DESC LIMIT 200",
+                    conn
+                )
+            if not df_log.empty:
+                # Filtros
+                _f1, _f2 = st.columns(2)
+                _usr_fil = _f1.selectbox("Filtrar por usuario",
+                    ["Todos"] + df_log["usuario"].unique().tolist())
+                _act_fil = _f2.selectbox("Filtrar por acción",
+                    ["Todas"] + df_log["accion"].unique().tolist())
+                if _usr_fil != "Todos":
+                    df_log = df_log[df_log["usuario"] == _usr_fil]
+                if _act_fil != "Todas":
+                    df_log = df_log[df_log["accion"] == _act_fil]
+                st.dataframe(df_log, use_container_width=True, hide_index=True)
+                st.caption(f"Mostrando {len(df_log)} registros")
+            else:
+                st.info("Sin acciones registradas aún.")
+        except Exception as e:
+            st.warning(f"Log no disponible: {e}")
+
+    with tab_datos:
+        st.markdown("#### Expedientes registrados")
+        df = leer_pacientes()
+        if not df.empty:
+            _busq = st.text_input("🔍 Buscar por nombre o DNI", key="aud_busq")
+            if _busq:
+                df = df[df.apply(lambda r: _busq.lower() in
+                    str(r.get("nombres","")).lower() or
+                    _busq in str(r.get("dni","")), axis=1)]
+            st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Sin expedientes registrados aún.")
+
+    with tab_export:
+        st.markdown("#### Exportaciones")
+        df_exp = leer_pacientes()
+        if not df_exp.empty:
+            ec1, ec2 = st.columns(2)
+
+            # Exportar completo (solo rol médico)
+            if st.session_state.rol == "medico":
+                ec1.download_button(
+                    "⬇ Exportar datos completos (CSV)",
+                    df_exp.to_csv(index=False).encode("utf-8"),
+                    f"evipro_datos_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    "text/csv", use_container_width=True)
+                registrar_auditoria("EXPORTAR_CSV", f"Filas: {len(df_exp)}")
+
+            # Exportar anonimizado — oculta nombre y DNI
+            _df_anon = df_exp.copy()
+            if "nombres" in _df_anon.columns:
+                _df_anon["nombres"] = _df_anon["nombres"].apply(
+                    lambda x: x[:2].upper() + "***" if isinstance(x,str) and x else "—")
+            if "dni" in _df_anon.columns:
+                _df_anon["dni"] = _df_anon["dni"].apply(
+                    lambda x: "***" + str(x)[-3:] if isinstance(x,str) and len(str(x))>3 else "—")
+            ec2.download_button(
+                "⬇ Exportar anonimizado (CSV)",
+                _df_anon.to_csv(index=False).encode("utf-8"),
+                f"evipro_anonimizado_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv", use_container_width=True)
+
+            # Resumen estadístico
+            resumen = (
+                f"EVIPro — Reporte de Auditoría\n"
+                f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n"
+                f"Generado por: {st.session_state.usuario} ({st.session_state.rol})\n"
+                f"{'='*40}\n"
+                f"Total expedientes: {s['total']}\n"
+                f"Consultas hoy: {s['hoy']}\n"
+                f"GAD-7 promedio: {s['gad_avg']:.1f}\n"
+                f"PHQ-9 promedio: {s['phq_avg']:.1f}\n"
+            )
+            st.download_button(
+                "⬇ Exportar resumen estadístico (TXT)",
+                resumen.encode("utf-8"),
+                f"resumen_{datetime.now().strftime('%Y%m%d')}.txt",
+                "text/plain", use_container_width=True)
+        else:
+            st.warning("Sin expedientes para exportar.")
+
+
 
 # ══════════════════════════════════════════════════════════════
 #  MÓDULO CITAS Y AGENDA
