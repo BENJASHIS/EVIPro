@@ -237,22 +237,31 @@ def stats_db() -> dict:
     try:
         if _USA_SUPABASE:
             cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM pacientes"); total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM pacientes")
+            total = cur.fetchone()[0] or 0
             cur.execute("SELECT COUNT(*) FROM pacientes WHERE fecha=%s",
-                        (datetime.now().strftime("%d/%m/%Y"),)); hoy = cur.fetchone()[0]
-            cur.execute("SELECT AVG(gad7) FROM pacientes"); gad_avg = cur.fetchone()[0] or 0
-            cur.execute("SELECT AVG(phq9) FROM pacientes"); phq_avg = cur.fetchone()[0] or 0
-            cur.execute("SELECT fecha,nombres FROM pacientes ORDER BY id DESC LIMIT 1"); ultima = cur.fetchone()
-            cur.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'"); citas_p = cur.fetchone()[0]
+                        (datetime.now().strftime("%d/%m/%Y"),))
+            hoy = cur.fetchone()[0] or 0
+            cur.execute("SELECT AVG(gad7) FROM pacientes")
+            gad_avg = float(cur.fetchone()[0] or 0)
+            cur.execute("SELECT AVG(phq9) FROM pacientes")
+            phq_avg = float(cur.fetchone()[0] or 0)
+            cur.execute("SELECT fecha,nombres FROM pacientes ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+            ultima = (row[0], row[1]) if row else None
+            cur.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'")
+            citas_p = cur.fetchone()[0] or 0
             cur.close()
         else:
-            total   = conn.execute("SELECT COUNT(*) FROM pacientes").fetchone()[0]
+            total   = conn.execute("SELECT COUNT(*) FROM pacientes").fetchone()[0] or 0
             hoy     = conn.execute("SELECT COUNT(*) FROM pacientes WHERE fecha=?",
-                                (datetime.now().strftime("%d/%m/%Y"),)).fetchone()[0]
-            gad_avg = conn.execute("SELECT AVG(gad7) FROM pacientes").fetchone()[0] or 0
-            phq_avg = conn.execute("SELECT AVG(phq9) FROM pacientes").fetchone()[0] or 0
+                                (datetime.now().strftime("%d/%m/%Y"),)).fetchone()[0] or 0
+            gad_avg = float(conn.execute("SELECT AVG(gad7) FROM pacientes").fetchone()[0] or 0)
+            phq_avg = float(conn.execute("SELECT AVG(phq9) FROM pacientes").fetchone()[0] or 0)
             ultima  = conn.execute("SELECT fecha,nombres FROM pacientes ORDER BY id DESC LIMIT 1").fetchone()
-            citas_p = conn.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'").fetchone()[0]
+            citas_p = conn.execute("SELECT COUNT(*) FROM citas WHERE estado='Pendiente'").fetchone()[0] or 0
+    except Exception as e:
+        total, hoy, gad_avg, phq_avg, ultima, citas_p = 0, 0, 0.0, 0.0, None, 0
     finally:
         if _USA_SUPABASE: conn.close()
     return {"total":total,"hoy":hoy,"gad_avg":gad_avg,"phq_avg":phq_avg,
@@ -1278,7 +1287,9 @@ if modulo == "📋 Historia Clínica":
                               value=date(1990,1,1),
                               min_value=date(1900,1,1),
                               max_value=date.today())
-        edad = (date.today() - f_nac).days // 365
+        # Edad calculada a la fecha de la consulta (no a hoy)
+        _fecha_consulta = fecha_hc if isinstance(fecha_hc, date) else date.today()
+        edad = (_fecha_consulta - f_nac).days // 365
         st.session_state.hc_data["f_nac_raw"] = f_nac
         # Guardar fecha raw para cálculo preciso en menores de 3 años
         st.session_state.hc_data["f_nac_raw"] = f_nac
@@ -2958,7 +2969,9 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
         edad_num = d.get("edad", 0)
         f_nac_stored = st.session_state.hc_data.get("f_nac_raw", None)
         if f_nac_stored and isinstance(f_nac_stored, date) and edad_num < 3:
-            meses_total = (date.today().year - f_nac_stored.year)*12 + (date.today().month - f_nac_stored.month)
+            _fc = st.session_state.hc_data.get("fecha_hc")
+            _fecha_ref = datetime.strptime(_fc, "%d/%m/%Y").date() if isinstance(_fc, str) else date.today()
+            meses_total = (_fecha_ref.year - f_nac_stored.year)*12 + (_fecha_ref.month - f_nac_stored.month)
             anos_e  = meses_total // 12
             meses_e = meses_total % 12
             edad_str = f"{anos_e} año{'s' if anos_e!=1 else ''} y {meses_e} mes{'es' if meses_e!=1 else ''}" if anos_e > 0 else f"{meses_e} mes{'es' if meses_e!=1 else ''}"
