@@ -122,6 +122,7 @@ def init_db():
     for col_sql in [
         "ALTER TABLE pacientes ADD COLUMN creado_por TEXT",
         "ALTER TABLE pacientes ADD COLUMN consentimiento INTEGER DEFAULT 0",
+        "ALTER TABLE pacientes ADD COLUMN codigo_web TEXT",
     ]:
         try:
             _ejecutar_sql(col_sql)
@@ -3512,7 +3513,77 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
                 pid = guardar_paciente(reg)
                 if st.session_state.farmacos:
                     guardar_farmacos(pid, st.session_state.farmacos)
+
+                # ── Generar código de acceso web del paciente ──
+                _anio = datetime.now().strftime("%Y")
+                _cod_pac = f"CP-{_anio}-{str(pid).zfill(4)}"
+                st.session_state["ultimo_codigo_pac"] = _cod_pac
+                st.session_state["ultimo_pid"] = pid
+                st.session_state["ultimo_nombre"] = d.get("nombres","paciente")
+
+                # Guardar código en la BD
+                try:
+                    ph = _PH
+                    _ejecutar_sql(
+                        f"UPDATE pacientes SET codigo_web={ph} WHERE id={ph}",
+                        (_cod_pac, pid)
+                    )
+                except: pass
+
                 st.success(f"✅ Historia de **{d.get('nombres','paciente')}** registrada - ID #{pid}")
+
+        # ── Mostrar código de acceso si fue generado ──
+        if st.session_state.get("ultimo_codigo_pac") and st.session_state.get("ultimo_pid"):
+            _cod  = st.session_state["ultimo_codigo_pac"]
+            _nom  = st.session_state["ultimo_nombre"]
+            _pid  = st.session_state["ultimo_pid"]
+
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(f"""
+            <div style='background:#0a1a10;border:1px solid #2d6b2d;border-radius:10px;
+                        padding:1.25rem 1.5rem;margin-bottom:1rem;'>
+              <div style='font-size:9px;color:#4dc8b4;letter-spacing:2px;margin-bottom:8px;'>
+                CÓDIGO DE ACCESO — PORTAL WEB DEL PACIENTE
+              </div>
+              <div style='display:flex;align-items:center;gap:16px;flex-wrap:wrap;'>
+                <div>
+                  <div style='font-size:0.75rem;color:#8a9a8a;margin-bottom:4px;'>Paciente: <strong style='color:#f5f5f0;'>{_nom}</strong></div>
+                  <div style='font-family:monospace;font-size:1.6rem;font-weight:700;
+                              color:#39FF14;letter-spacing:4px;
+                              text-shadow:0 0 10px rgba(57,255,20,0.5);'>
+                    {_cod}
+                  </div>
+                  <div style='font-size:0.7rem;color:#4a6a4a;margin-top:4px;'>
+                    Acceso a portal web · Recetas · Tienda cannabinoide · Renovaciones
+                  </div>
+                </div>
+              </div>
+              <div style='margin-top:12px;padding-top:10px;border-top:1px solid #1a3a1a;
+                          font-size:0.72rem;color:#5a7a5a;line-height:1.6;'>
+                ✉️ Entregar este código al paciente para acceder a su portal en la web del consultorio.<br>
+                🔒 Solo funciona con este código — acceso privado y personal.
+              </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Botones para compartir el código
+            _msg_wa = (f"Hola {_nom.split()[0] if _nom else 'paciente'}, "
+                       f"su código de acceso al portal de pacientes de Fisioimperium es:\n\n"
+                       f"🌿 *Código:* `{_cod}`\n\n"
+                       f"Ingresa en: https://fisioimperium.netlify.app/#pacientes\n\n"
+                       f"Con este código podrás ver tus recetas, solicitar renovaciones "
+                       f"y adquirir tus cannabinoides medicinales.\n\n"
+                       f"— Dr. J. Carlos Jara Ovalle · RNA A10684 · CMP 82817")
+
+            _c1, _c2 = st.columns(2)
+            _c1.link_button(
+                "📱 Enviar código por WhatsApp",
+                wa_url(_msg_wa),
+                use_container_width=True
+            )
+            if _c2.button("📋 Copiar código", use_container_width=True):
+                st.code(_cod)
+                st.caption("Copia el código de arriba")
 
         with fc2:
             if st.button("📩 Enviar resumen por WhatsApp", use_container_width=True):
@@ -3527,6 +3598,9 @@ Protocolo sugerido para <strong>{_dx_rec or 'diagnóstico pendiente'}</strong> (
                 st.session_state.paso_hc = 0
                 st.session_state.hc_data = {}
                 st.session_state.farmacos = []
+                st.session_state.pop("ultimo_codigo_pac", None)
+                st.session_state.pop("ultimo_pid", None)
+                st.session_state.pop("ultimo_nombre", None)
                 st.rerun()
 
         nav_btns(paso)
